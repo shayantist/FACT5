@@ -21,7 +21,7 @@ Here are some examples:
 <<<
 Statements: {statements}
 >>>
-Atomic Claims: ["""
+Atomic Claims: []"""
 
 question_generation_template = """
 You are a helpful assistant. Your task is to provide a set of unique, independent questions to search on the web to verify the claim given after <<<>>>.
@@ -43,7 +43,7 @@ Here are some examples:
 <<<
 Claim: {claim}
 >>>
-Questions: ["""
+Questions: []"""
 
 answer_synthesis_template = """
 You are a helpful assistant. Your task is to synthesize the documents (along with their source metadata) provided below to answer the question given after <<<>>>.
