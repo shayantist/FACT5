@@ -1,25 +1,25 @@
-from concurrent.futures import ThreadPoolExecutor
-import itertools
-import os
+import time
 import json
 import requests
+import itertools
 from bs4 import BeautifulSoup
 from termcolor import colored
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import List, Dict, Optional, Tuple
-import time
+from concurrent.futures import ThreadPoolExecutor
 
 import dspy
 import faiss
 from tqdm import tqdm
 from rank_bm25 import BM25Okapi
+import json_repair
 from sentence_transformers import SentenceTransformer
 
 from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 
-from utils import chunk_text, print_header, process_JSON_response
+from utils import chunk_text, print_header
 
 @dataclass
 class Citation:
@@ -131,9 +131,11 @@ class SearchProvider:
                     for result in results
                 ]
             except Exception as e:
+                if attempt == num_attempts - 1:
+                    raise Exception(f"DuckDuckGo search error: {str(e)}, max attempts reached")
                 if "rate" in str(e).lower() and attempt < num_attempts - 1:
                     if VERBOSE:
-                        print(f"Rate limited, waiting {wait_time}s before retry {attempt + 1}")
+                        print(f"Rate limited, waiting {wait_time}s before retry {attempt + 1}/{num_attempts}")
                     time.sleep(wait_time)
                     continue
                 else:
@@ -250,8 +252,7 @@ class VectorStore:
         
         # Initialize BM25 index
         if self.use_bm25:
-            tokenized_docs = [doc.split() for doc in all_chunks]
-            self.bm25 = BM25Okapi(tokenized_docs)
+            self.bm25 = BM25Okapi(self.documents)
     
     def retrieve(self, query: str, k: int = 10) -> List[RetrievedDocument]:
         # Get FAISS scores
@@ -264,12 +265,12 @@ class VectorStore:
             score = float(faiss_scores[0][i])
             
             # Combine FAISS and BM25 scores using weighted average
-            # if self.use_bm25:
-            #     bm25_score = self.bm25.get_scores([query])[idx]
-            #     score = (
-            #         self.bm25_weight * bm25_score + 
-            #         (1 - self.bm25_weight) * score
-            #     )
+            if self.use_bm25:
+                bm25_score = self.bm25.get_scores([query])[idx]
+                score = (
+                    self.bm25_weight * bm25_score + 
+                    (1 - self.bm25_weight) * score
+                )
 
             # Save retrieved document w/ weighted score
             if score > 0: # TODO: make this threshold configurable
@@ -285,22 +286,37 @@ class VectorStore:
         return sorted(results, key=lambda x: x.score, reverse=True)
 
 class ClaimExtractorSignature(dspy.Signature):
-    """Extract specific, testable factual claims from the given text."""
-    # """
-    #     Task: Extract specific, testable factual claims from the given text.
-    #     Requirements:
-    #     1. Each claim should be context-independent
-    #     2. Focus on single, verifiable ideas
-    #     3. Maintain clarity and coherence
-    #     4. If a statement is atomic, keep it as is
-    # """
+    # """Extract specific, testable factual claims from the given text."""
+    # # """
+    # #     Task: Extract specific, testable factual claims from the given text.
+    # #     Requirements:
+    # #     1. Each claim should be context-independent
+    # #     2. Focus on single, verifiable ideas
+    # #     3. Maintain clarity and coherence
+    # #     4. If a statement is atomic, keep it as is
+    # # """
+    """Extract specific, testable factual claims from the given text.
+    Requirements:
+    1. Each claim must contain the required context to verify it (e.g., specific time period in years, location, entities involved, etc.). Repeat the context across multiple claims if necessary.
+    2. Focus on single, verifiable ideas
+    3. Maintain clarity and coherence
+    4. If a statement is atomic, keep it as is
+    """
     text = dspy.InputField(desc="The text to extract claims from")
+    # claims = dspy.OutputField(desc="""JSON object containing:
+    # {
+    #     "claims": [
+    #         {
+    #             "text": string, 
+    #             "reasoning": string,
+    #         }
+    #     ]
+    # }""")
     claims = dspy.OutputField(desc="""JSON object containing:
     {
         "claims": [
             {
-                "text": string,
-                "reasoning": string
+                "text": string, # Extracted claim containing required context for independent verification (e.g., "The wage gap between rich and poor was shrinking during the Trump administration in 2016-2020.")
             }
         ]
     }""")
@@ -314,7 +330,7 @@ class ClaimExtractor(dspy.Module):
         # Extract claims with LLM (retry if failed)
         try:
             result = self.extract(text=text)
-            claims = process_JSON_response(result["claims"])["claims"]
+            claims = json_repair.loads(result["claims"])["claims"]
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(text)
@@ -372,7 +388,7 @@ class ClaimDecomposer(dspy.Module):
         # Decompose claim into components (questions + search queries) with LLM (retry if failed)
         try:
             result = self.decompose(claim=claim.text)
-            data = process_JSON_response(result["questions"])
+            data = json_repair.loads(result["questions"])
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(claim=claim)
@@ -394,7 +410,7 @@ class ClaimDecomposer(dspy.Module):
                     feedback = input("Please provide feedback on what's wrong: ")
                     # Regenerate components with feedback (TODO: implement history)
                     result = self.forward(claim=f"{claim.text} {feedback}")    
-                    # data = process_JSON_response(result["components"])
+                    # data = json_repair.loads(result["components"])
                     # print("\nRegenerated Components:")
                     # print(json.dumps(data, indent=2))
 
@@ -438,7 +454,7 @@ class AnswerSynthesizer(dspy.Module):
                     "content": doc.content
                 } for doc in documents]
             )
-            data = process_JSON_response(result["answer"])
+            data = json_repair.loads(result["answer"])
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(component, documents)
@@ -456,32 +472,32 @@ class AnswerSynthesizer(dspy.Module):
                 print_header(f"Source: {citation.source_title} ({citation.source_url})", level=5)
 
         return answer
-    
+
 ## CLAIM EVALUATOR ##
+VERDICTS = [
+    "TRUE", "MOSTLY TRUE", "HALF TRUE", 
+    "MOSTLY FALSE", "FALSE", "UNVERIFIABLE"
+]
+
 class ClaimEvaluatorSignature(dspy.Signature):
     """Evaluate a claim based on questions and answers."""
     claim = dspy.InputField(desc="The claim to evaluate")
     qa_pairs = dspy.InputField(desc="Question-answer pairs with citations")
-    evaluation = dspy.OutputField(desc="""JSON object containing:
-    {
-        "verdict": string,  # One of: TRUE, MOSTLY TRUE, HALF TRUE, MOSTLY FALSE, FALSE, UNVERIFIABLE
+    evaluation = dspy.OutputField(desc=f"""JSON object containing:
+    {{
+        "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,  # Between 0 and 1
         "reasoning": string,
         "evidence_analysis": [
-            {
+            {{
                 "question": string,
                 "answer": string,
                 "contribution": string
-            }
+            }}
         ]
-    }""")
+    }}""")
 
-class ClaimEvaluator(dspy.Module):
-    VERDICTS = [
-        "TRUE", "MOSTLY TRUE", "HALF TRUE", 
-        "MOSTLY FALSE", "FALSE", "UNVERIFIABLE"
-    ]
-    
+class ClaimEvaluator(dspy.Module):    
     def __init__(self):
         super().__init__()
         self.evaluate = dspy.ChainOfThought(ClaimEvaluatorSignature)
@@ -500,7 +516,7 @@ class ClaimEvaluator(dspy.Module):
             claim=claim.text,
             qa_pairs=json.dumps(qa_pairs, indent=2)
         )
-        data = process_JSON_response(result["evaluation"])
+        data = json_repair.loads(result["evaluation"])
         verdict = data["verdict"]
         confidence = data["confidence"]
         reasoning = data["reasoning"]
@@ -531,12 +547,12 @@ class ClaimEvaluator(dspy.Module):
 class OverallVerdictSignature(dspy.Signature):
     """Calculate overall verdict based on atomic claims."""
     claims = dspy.InputField(desc="List of evaluated atomic claims")
-    overall_verdict = dspy.OutputField(desc="""JSON object containing:
-    {
-        "verdict": string,  # One of: TRUE, MOSTLY TRUE, HALF TRUE, MOSTLY FALSE, FALSE, UNVERIFIABLE
+    overall_verdict = dspy.OutputField(desc=f"""JSON object containing:
+    {{
+        "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,
         "reasoning": string
-    }""")
+    }}""")
 
 class FactCheckPipeline:
     def __init__(
@@ -706,8 +722,8 @@ if __name__ == "__main__":
     search_provider = SearchProvider(provider="duckduckgo")
 
     # Initialize DSPy
-    lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
-    # lm = dspy.LM('ollama/mistral')
+    # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
+    lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
     dspy.settings.configure(lm=lm)
 
     # Initialize pipeline
@@ -730,7 +746,9 @@ if __name__ == "__main__":
     # rich and poor was shrinking. The savings rate for black Americans was 
     # the highest in the history of our country."""
 
-    statement = """The US economy is in a recession now in 2024."""
+    # statement = """The US economy is in a recession now in 2024."""
+
+    statement = "Donald Trump repealed the Equal Employment Opportunity Act."
 
     # Run fact-checking pipeline
     result = pipeline.fact_check(statement)

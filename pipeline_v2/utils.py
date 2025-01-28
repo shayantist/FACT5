@@ -3,61 +3,6 @@ import json
 from typing import Dict, List
 from termcolor import colored
 
-# JSON Utility Functions
-def parse_malformed_json(json_str):
-    """Parses JSON with malformed quotes within values using a stack-based validation approach"""
-    result = []
-    stack = []
-    i = 0
-    
-    while i < len(json_str):
-        char = json_str[i]
-        
-        if char == '"':
-            if not stack:
-                stack.append('"')
-                result.append(char)
-            elif json_str[i:].replace(" ", "")[1].isalnum() or json_str[i:].replace(" ", "")[1] == '"':
-                result.append("'")
-                stack[-1] = "'"
-            else:
-                stack.pop()
-                result.append(char)
-        else:
-            result.append(char)
-        i += 1
-    
-    return ''.join(result)
-
-def process_JSON_response(response: str) -> List[Dict]:
-    """Utility function to clean up JSON responses from a LLM"""
-    # Remove any leading or trailing whitespace
-    response = response.strip()
-
-    if response == "": return []
-
-    # Remove the JSON wrapper if it exists
-    if '```json' in response: 
-        response = response.split("```json")[1].split("```")[0]
-
-    try: 
-        return json.loads(response)
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse JSON response: {e} \nTrying manual parsing...")
-        response = parse_malformed_json(response)
-        try: 
-            return json.loads(response)
-        except json.JSONDecodeError as e2:
-            print('HIII', e2.msg)
-            if "Unterminated string" in e2.msg: 
-                return process_JSON_response(response + '"')
-            elif "Expecting ',' delimiter" in e2.msg: 
-                print(response)
-                return process_JSON_response(response + ',')
-            else: 
-                print(f"Failed to parse JSON response: {e2} \nResponse: {response}")
-                return []
-
 # def print_header(text, level=0, decorator='=', decorator_len=5):
 #     """Print a header with a given decorator and text."""
 #     indent = " " * (level * 2)
