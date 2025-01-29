@@ -1,3 +1,4 @@
+import os
 import time
 import json
 import requests
@@ -43,7 +44,7 @@ class ClaimComponent:
 @dataclass
 class Claim:
     text: str
-    questions: List[ClaimComponent] = None
+    components: List[ClaimComponent] = None
     verdict: Optional[str] = None
     confidence: Optional[float] = None
     reasoning: Optional[str] = None
@@ -120,7 +121,7 @@ class SearchProvider:
         
         for attempt in range(num_attempts):
             try:
-                results = DDGS().text(query, max_results=num_results)
+                results = DDGS().text(query.lower(), max_results=num_results)
                 return [
                     SearchResult(
                         title=result["title"], 
@@ -131,16 +132,13 @@ class SearchProvider:
                     for result in results
                 ]
             except Exception as e:
-                if attempt == num_attempts - 1:
-                    raise Exception(f"DuckDuckGo search error: {str(e)}, max attempts reached")
-                if "rate" in str(e).lower() and attempt < num_attempts - 1:
-                    if VERBOSE:
-                        print(f"Rate limited, waiting {wait_time}s before retry {attempt + 1}/{num_attempts}")
+                if attempt < num_attempts - 1:
+                    print(f"Search error: {str(e)}, waiting {wait_time}s before retry {attempt + 1}/{num_attempts}")
                     time.sleep(wait_time)
                     continue
-                else:
-                    print(f"DuckDuckGo search error: {str(e)}")
-                    return []
+                else: 
+                    raise Exception(f"Search error: {str(e)}, max attempts reached")
+
         
     def _filter_and_rank_results(self, results: List[SearchResult]) -> List[SearchResult]:
         """Filter and rank search results based on various criteria."""
@@ -544,15 +542,50 @@ class ClaimEvaluator(dspy.Module):
         
         return verdict, confidence, reasoning
 
-class OverallVerdictSignature(dspy.Signature):
+## OVERALL STATEMENT EVALUATOR (SET OF CLAIMS) ##
+class OverallStatementEvaluatorSignature(dspy.Signature):
     """Calculate overall verdict based on atomic claims."""
-    claims = dspy.InputField(desc="List of evaluated atomic claims")
+    claims = dspy.InputField(desc="List of evaluated atomic claims, and associated question-answer pairs")
     overall_verdict = dspy.OutputField(desc=f"""JSON object containing:
     {{
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,
-        "reasoning": string
     }}""")
+        # "reasoning": string
+
+class OverallStatementEvaluator(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.evaluate = dspy.ChainOfThought(OverallStatementEvaluatorSignature)
+
+    def forward(self, claims: List[Claim]) -> Tuple[str, float, str]:
+        # Unwrap claims into claim text, qa_pairs, and verdicts
+        claims_dict = [ 
+            {
+                "claim": c.text,
+                "qa_pairs": [
+                    {
+                        "question": cc.question_text,
+                        "answer": cc.answer.text,
+                        # "citations": [vars(c) for c in a.citations]
+                    }
+                    for cc in c.components
+                ],
+                "verdict": c.verdict
+            }
+            for c in claims
+        ]
+
+        result = self.evaluate(
+            claims=json.dumps(claims_dict, indent=2)
+        )
+        
+        data = json_repair.loads(result["overall_verdict"])
+        verdict = data["verdict"]
+        confidence = data["confidence"]
+        reasoning = result["reasoning"]
+        
+        return verdict, confidence, reasoning   
 
 class FactCheckPipeline:
     def __init__(
@@ -576,6 +609,7 @@ class FactCheckPipeline:
         )
         self.answer_synthesizer = AnswerSynthesizer()
         self.claim_evaluator = ClaimEvaluator()
+        self.overall_statement_evaluator = OverallStatementEvaluator()
         
         # Chat history for interactive mode, TODO: implement history
         self.chat_history = []
@@ -691,8 +725,22 @@ class FactCheckPipeline:
             claim.confidence = confidence
             claim.reasoning = reasoning
 
+        # If multiple claims, do verdict for entire statement
+        if len(claims) > 1:
+            # Step 6: Evaluate overall statement
+            if VERBOSE: print_header("Overall Statement Evaluation", level=1, decorator='=')
+            overall_verdict, overall_confidence, overall_reasoning = self.overall_statement_evaluator(claims)
+            if VERBOSE:
+                print_header(f"Overall Verdict: {colored(overall_verdict, 'green')}", level=2)
+                print_header(f"Overall Confidence: {colored(str(overall_confidence), 'yellow')}", level=2)
+                print_header(f"Overall Reasoning: {colored(overall_reasoning, 'cyan')}", level=2)
+        else: 
+            overall_verdict = claims[0].verdict
+            overall_confidence = claims[0].confidence
+            overall_reasoning = claims[0].reasoning
+
         if VERBOSE:
-            print_header("Final Results", level=0, decorator='=')
+            print_header("Breakdown of Claims and Components", level=0, decorator='=')
             for i, claim in enumerate(claims, 1):
                 print_header(f"Claim {i}", level=1)
                 print_header("Text: " + colored(claim.text, 'white'), level=2)
@@ -709,7 +757,7 @@ class FactCheckPipeline:
                         print_header(f"[{k}] " + colored(citation.snippet, 'yellow'), level=4)
                         print_header(f"Source: {citation.source_title} ({citation.source_url})", level=4)
 
-        return claims
+        return overall_verdict, overall_confidence, overall_reasoning, claims
 
 # Example usage
 if __name__ == "__main__":
@@ -722,8 +770,8 @@ if __name__ == "__main__":
     search_provider = SearchProvider(provider="duckduckgo")
 
     # Initialize DSPy
-    # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
-    lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
+    lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
+    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
     dspy.settings.configure(lm=lm)
 
     # Initialize pipeline
@@ -748,12 +796,14 @@ if __name__ == "__main__":
 
     # statement = """The US economy is in a recession now in 2024."""
 
-    statement = "Donald Trump repealed the Equal Employment Opportunity Act."
-
-    # Run fact-checking pipeline
-    result = pipeline.fact_check(statement)
+    statement = "In New York, there are no barriers to law enforcement to work with the federal government on immigration laws, and there are 100 crimes where migrants can be handed over."
+    verdict, confidence, reasoning, claims = pipeline.fact_check(statement)
 
     # Print final result
     print("\nFinal Fact-Check Result:")
-    print(result)
+    print_header(f"Statement: {colored(statement, 'white')}", level=1)
+    print_header(f"Overall Verdict: {colored(verdict, 'green')}", level=1)
+    print_header(f"Overall Confidence: {colored(str(confidence), 'yellow')}", level=1)
+    print_header(f"Overall Reasoning: {colored(reasoning, 'cyan')}", level=1)
+    # print(result)
     # print(json.dumps(result, indent=2))
