@@ -348,6 +348,10 @@ class ClaimExtractor(dspy.Module):
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(text)
         
+        # Error handling for non-factual claims (e.g., opinion)
+        if len(claims) == 0:
+            raise Exception(f"Failed to extract claim: {result.reasoning}") 
+
         # If verbose, print extracted claims
         if VERBOSE or INTERACTIVE:
             print_header(f"Extracted Claims ({len(claims)}): ", level=1)
