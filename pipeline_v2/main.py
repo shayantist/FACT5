@@ -50,7 +50,7 @@ class Claim:
     reasoning: Optional[str] = None
 
 @dataclass
-class RetrievedDocument:
+class Document:
     content: str
     metadata: Dict[str, str]
     score: float
@@ -78,7 +78,22 @@ class SearchProvider:
         else:
             raise ValueError(f"Unsupported search provider: {self.provider}")
         
-        # if VER`BOSE: print(f"Found {len(results)} results")
+        if VERBOSE:
+            print_header(f"Retrieved {len(results)} Sources:", level=4)
+            for i, result in enumerate(results, 1):
+                print_header(f"{i}. {result.title}", level=5)
+                print_header(f"URL: {result.url}", level=5)
+                print_header(f"Excerpt: {result.excerpt}", level=5)
+
+        if INTERACTIVE:
+            while True:
+                feedback = input("Are these sources relevant? (yes/no): ").lower()
+                if feedback == "yes":
+                    break
+                elif feedback == "no":
+                    feedback = input("Please provide feedback on what's wrong: ")
+                    results = self.search(f"{query} {feedback}")
+                    continue
 
         filtered_results = self._filter_and_rank_results(results)
 
@@ -206,7 +221,7 @@ class VectorStore:
         # Initialize FAISS index
         self.index = None
         self.documents = []
-        self.metadata = []
+        self.metadata = [] # TODO: combine metadata with documents?
         
         if use_bm25: self.bm25 = None
             
@@ -252,7 +267,7 @@ class VectorStore:
         if self.use_bm25:
             self.bm25 = BM25Okapi(self.documents)
     
-    def retrieve(self, query: str, k: int = 10) -> List[RetrievedDocument]:
+    def retrieve(self, query: str, k: int = 10) -> List[Document]:
         # Get FAISS scores
         query_embedding = self.encoder.encode([query])[0].reshape(1, -1) # Reshape to 1D array
         faiss_scores, faiss_indices = self.index.search(query_embedding, k)
@@ -273,7 +288,7 @@ class VectorStore:
             # Save retrieved document w/ weighted score
             if score > 0: # TODO: make this threshold configurable
                 results.append(
-                    RetrievedDocument(
+                    Document(
                         content=self.documents[idx],
                         metadata=self.metadata[idx],
                         score=score
@@ -436,7 +451,7 @@ class AnswerSynthesizer(dspy.Module):
         super().__init__()
         self.synthesize = dspy.ChainOfThought(AnswerSynthesizerSignature)
 
-    def forward(self, component: ClaimComponent, documents: List[RetrievedDocument]) -> Answer:
+    def forward(self, component: ClaimComponent, documents: List[Document]) -> Answer:
         if VERBOSE:
             print_header("Question: " + colored(component.question_text, 'yellow'), level=4)
             print_header("Search Queries: " + colored(component.search_queries, 'yellow'), level=4)
@@ -551,7 +566,6 @@ class OverallStatementEvaluatorSignature(dspy.Signature):
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,
     }}""")
-        # "reasoning": string
 
 class OverallStatementEvaluator(dspy.Module):
     def __init__(self):
@@ -613,50 +627,6 @@ class FactCheckPipeline:
         
         # Chat history for interactive mode, TODO: implement history
         self.chat_history = []
-        
-    def _scrape_webpage(self, url: str) -> Tuple[str, Dict[str, str]]:
-        try:
-            response = requests.get(url, timeout=SCRAPE_TIMEOUT)  # Set a timeout of 5 seconds
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract main content (customize based on website structure)
-            content = ' '.join([p.text for p in soup.find_all('p')])
-            
-            metadata = {
-                "url": url,
-                "title": soup.title.string if soup.title else "",
-                "source": urlparse(url).netloc
-            }
-            
-            return content, metadata
-        except Exception as e:
-            print(f"Error processing {url}: {str(e)}")
-            return "", {}
-
-    def _index_into_retriever(self, query: str, search_results: List[str]) -> List[RetrievedDocument]:  # TODO: combine this   
-        # Process webpages and index content
-        documents = []
-        metadata = []
-        for result in tqdm(search_results, desc="Processing sources"):
-            # First add source relevant excerpt to documents if available
-            if result.excerpt:
-                documents.append(result.excerpt)
-                metadata.append({
-                    "title": result.title,
-                    "url": result.url,
-                    "source": result.source
-                })
-
-            # Otherwise, scrape the webpage
-            # content, meta = self._process_webpage(result.url)
-            # if content: 
-            #     # Split content into chunks, preserving full sentences
-            #     chunks = chunk_text(content)
-            #     documents.extend(chunks)
-            #     metadata.extend([meta] * len(chunks))
-        
-        self.retriever.add_documents(documents, metadata)
-        return self.retriever.retrieve(query, k=self.retriever_k)
 
     def fact_check(self, statement: str) -> List[Claim]:
         if VERBOSE:
@@ -683,31 +653,23 @@ class FactCheckPipeline:
                     print_header(f"Query: {colored(query, 'yellow')}", level=4)
                     # Perform web search
                     search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
-
-                    if VERBOSE:
-                        print_header(f"Retrieved {len(search_results)} Sources:", level=4)
-                        for i, result in enumerate(search_results, 1):
-                            print_header(f"{i}. {result.title}", level=5)
-                            print_header(f"URL: {result.url}", level=5)
-                            print_header(f"Excerpt: {result.excerpt}", level=5)
-
-                    if INTERACTIVE:
-                        while True:
-                            feedback = input("Are these sources relevant? (yes/no): ").lower()
-                            if feedback == "yes":
-                                break
-                            elif feedback == "no":
-                                feedback = input("Please provide feedback on what's wrong: ")
-                                search_results = self.search_provider.search(
-                                    f"{query} {feedback}"
-                                )
-                                continue
                     
-                    # Get relevant documents
-                    docs = self._index_into_retriever(query, search_results)
-                    relevant_docs.extend(docs)
+                    # Save documents (search results) to vector DB, TODO: you can provide your own documents
+                    documents, metadata = [], []
+                    for result in tqdm(search_results, desc="Processing sources"):
+                        if result.excerpt:
+                            documents.append(result.excerpt) # Use the excerpt as the document content in this case
+                            metadata.append({
+                                "title": result.title,
+                                "url": result.url,
+                                "source": result.source
+                            })
+                    self.retriever.add_documents(documents, metadata)
+                    
+                    # Get ONLY **relevant** documents (search results)
+                    relevant_docs.extend(self.retriever.retrieve(query, k=self.retriever_k))
 
-                # Step 4: Synthesize answer
+                # Step 4: Synthesize answer given relevant documents
                 if VERBOSE: print_header(f"Synthesizing Answer [{component_i}/{len(components)}]", level=3, decorator='=')
                 answer = self.answer_synthesizer(
                     component=component,
@@ -721,9 +683,7 @@ class FactCheckPipeline:
             # Step 5: Evaluate claim
             verdict, confidence, reasoning = self.claim_evaluator(claim=claim)
             # Set claim attributes
-            claim.verdict = verdict
-            claim.confidence = confidence
-            claim.reasoning = reasoning
+            claim.verdict, claim.confidence, claim.reasoning = verdict, confidence, reasoning
 
         # If multiple claims, do verdict for entire statement
         if len(claims) > 1:
@@ -793,8 +753,6 @@ if __name__ == "__main__":
     # where wages adjusted for inflation were rising. The wage gap between 
     # rich and poor was shrinking. The savings rate for black Americans was 
     # the highest in the history of our country."""
-
-    # statement = """The US economy is in a recession now in 2024."""
 
     statement = "In New York, there are no barriers to law enforcement to work with the federal government on immigration laws, and there are 100 crimes where migrants can be handed over."
     verdict, confidence, reasoning, claims = pipeline.fact_check(statement)
