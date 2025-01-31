@@ -36,7 +36,7 @@ class Answer:
 
 @dataclass
 class ClaimComponent: 
-    question_text: str
+    question: str
     search_queries: List[str]
     component_type: str = None
     answer: Optional[Answer] = None
@@ -50,10 +50,10 @@ class Claim:
     reasoning: Optional[str] = None
 
 @dataclass
-class RetrievedDocument:
+class Document:
     content: str
     metadata: Dict[str, str]
-    score: float
+    score: float = None
 
 @dataclass
 class SearchResult:
@@ -78,7 +78,22 @@ class SearchProvider:
         else:
             raise ValueError(f"Unsupported search provider: {self.provider}")
         
-        # if VER`BOSE: print(f"Found {len(results)} results")
+        if VERBOSE:
+            print_header(f"Retrieved {len(results)} Sources:", level=4)
+            for i, result in enumerate(results, 1):
+                print_header(f"{i}. {result.title}", level=5)
+                print_header(f"URL: {result.url}", level=5)
+                print_header(f"Excerpt: {result.excerpt}", level=5)
+
+        if INTERACTIVE:
+            while True:
+                feedback = input("Are these sources relevant? (yes/no): ").lower()
+                if feedback == "yes":
+                    break
+                elif feedback == "no":
+                    feedback = input("Please provide feedback on what's wrong: ")
+                    results = self.search(f"{query} {feedback}")
+                    continue
 
         filtered_results = self._filter_and_rank_results(results)
 
@@ -206,7 +221,7 @@ class VectorStore:
         # Initialize FAISS index
         self.index = None
         self.documents = []
-        self.metadata = []
+        self.metadata = [] # TODO: combine metadata with documents?
         
         if use_bm25: self.bm25 = None
             
@@ -252,7 +267,7 @@ class VectorStore:
         if self.use_bm25:
             self.bm25 = BM25Okapi(self.documents)
     
-    def retrieve(self, query: str, k: int = 10) -> List[RetrievedDocument]:
+    def retrieve(self, query: str, k: int = 10) -> List[Document]:
         # Get FAISS scores
         query_embedding = self.encoder.encode([query])[0].reshape(1, -1) # Reshape to 1D array
         faiss_scores, faiss_indices = self.index.search(query_embedding, k)
@@ -273,7 +288,7 @@ class VectorStore:
             # Save retrieved document w/ weighted score
             if score > 0: # TODO: make this threshold configurable
                 results.append(
-                    RetrievedDocument(
+                    Document(
                         content=self.documents[idx],
                         metadata=self.metadata[idx],
                         score=score
@@ -293,12 +308,13 @@ class ClaimExtractorSignature(dspy.Signature):
     # #     3. Maintain clarity and coherence
     # #     4. If a statement is atomic, keep it as is
     # # """
-    """Extract specific, testable factual claims from the given text.
+    """Extract specific, testable factual claims from the given text ONLY.
     Requirements:
     1. Each claim must contain the required context to verify it (e.g., specific time period in years, location, entities involved, etc.). Repeat the context across multiple claims if necessary.
     2. Focus on single, verifiable ideas
     3. Maintain clarity and coherence
     4. If a statement is atomic, keep it as is
+    5. Always extract claims regardless of the content of the context unless the claim is clearly an opinion
     """
     text = dspy.InputField(desc="The text to extract claims from")
     # claims = dspy.OutputField(desc="""JSON object containing:
@@ -310,14 +326,7 @@ class ClaimExtractorSignature(dspy.Signature):
     #         }
     #     ]
     # }""")
-    claims = dspy.OutputField(desc="""JSON object containing:
-    {
-        "claims": [
-            {
-                "text": string, # Extracted claim containing required context for independent verification (e.g., "The wage gap between rich and poor was shrinking during the Trump administration in 2016-2020.")
-            }
-        ]
-    }""")
+    claims = dspy.OutputField(desc="""Pythonic list of claims containing required context for independent verification (e.g., "The wage gap between rich and poor was shrinking during the Trump administration in 2016-2020.")""")
 
 class ClaimExtractor(dspy.Module):
     def __init__(self):
@@ -328,7 +337,7 @@ class ClaimExtractor(dspy.Module):
         # Extract claims with LLM (retry if failed)
         try:
             result = self.extract(text=text)
-            claims = json_repair.loads(result["claims"])["claims"]
+            claims = json_repair.loads(result["claims"])
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(text)
@@ -341,7 +350,7 @@ class ClaimExtractor(dspy.Module):
         if VERBOSE or INTERACTIVE:
             print_header(f"Extracted Claims ({len(claims)}): ", level=1)
             for i, claim in enumerate(claims, 1):
-                print_header(f"{i}. {colored(claim['text'], 'white')}", level=2, decorator='')
+                print_header(f"{i}. {colored(claim, 'white')}", level=2, decorator='')
                 # print_header(f"  Reasoning: {claim['reasoning']}", level=3)
         
         # If interactive, allow user to provide feedback to regenerate claims
@@ -365,7 +374,7 @@ class ClaimExtractor(dspy.Module):
                     print("\nProcess interrupted. Exiting...")
                     exit(0)
         
-        return [Claim(text=claim["text"]) for claim in claims]
+        return [Claim(text=claim) for claim in claims]
 
 class ClaimDecomposerSignature(dspy.Signature):
     """Break down a claim to generate independent questions and search queries to answer it. Be as specific and concise as possible, try to minimize the number of questions and search queries while still being comprehensive to verify the claim."""
@@ -374,7 +383,7 @@ class ClaimDecomposerSignature(dspy.Signature):
     {
         "questions": [
             {
-                "question_text": string, # question text (e.g. "What was the GDP growth rate during the Trump administration?")
+                "question": string, # question text (e.g. "What was the GDP growth rate during the Trump administration?")
                 "search_queries": [string], # independent search queries used to answer the question, try to be as specific as possible and avoid redundancy, no more than 2 queries
             }
         ]
@@ -399,7 +408,7 @@ class ClaimDecomposer(dspy.Module):
         if VERBOSE or INTERACTIVE:
             print_header(f"Decomposed Components (Questions + Search Queries) ({len(data['questions'])}):", level=3)
             for i, component in enumerate(data['questions'], 1):
-                print_header(f"{i}. Question: {colored(component['question_text'], 'yellow')}", level=4)
+                print_header(f"{i}. Question: {colored(component['question'], 'yellow')}", level=4)
                 print_header(f"   Search Queries: {colored(component['search_queries'], 'yellow')}", level=4)
 
         # If interactive, allow user to provide feedback to regenerate components
@@ -440,19 +449,19 @@ class AnswerSynthesizer(dspy.Module):
         super().__init__()
         self.synthesize = dspy.ChainOfThought(AnswerSynthesizerSignature)
 
-    def forward(self, component: ClaimComponent, documents: List[RetrievedDocument]) -> Answer:
+    def forward(self, component: ClaimComponent, documents: List[Document]) -> Answer:
         if VERBOSE:
-            print_header("Question: " + colored(component.question_text, 'yellow'), level=4)
+            print_header("Question: " + colored(component.question, 'yellow'), level=4)
             print_header("Search Queries: " + colored(component.search_queries, 'yellow'), level=4)
 
         # Synthesize answer with LLM (retry if failed)
         try: 
             result = self.synthesize(
-                question=component.question_text,
+                question=component.question,
                 search_queries=component.search_queries,
                 documents=[{
-                    "title": doc.metadata["title"],
-                    "url": doc.metadata["url"],
+                    "title": doc.metadata.get("title", ""),
+                    "url": doc.metadata.get("url", ""),
                     "content": doc.content
                 } for doc in documents]
             )
@@ -507,7 +516,7 @@ class ClaimEvaluator(dspy.Module):
     def forward(self, claim: Claim) -> Tuple[str, float, str]:
         qa_pairs = [
             {
-                "question": c.question_text,
+                "question": c.question,
                 "answer": c.answer.text,
                 # "citations": [vars(c) for c in a.citations]
             }
@@ -555,7 +564,6 @@ class OverallStatementEvaluatorSignature(dspy.Signature):
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,
     }}""")
-        # "reasoning": string
 
 class OverallStatementEvaluator(dspy.Module):
     def __init__(self):
@@ -564,12 +572,12 @@ class OverallStatementEvaluator(dspy.Module):
 
     def forward(self, claims: List[Claim]) -> Tuple[str, float, str]:
         # Unwrap claims into claim text, qa_pairs, and verdicts
-        claims_dict = [ 
+        claims_dict = [
             {
                 "claim": c.text,
                 "qa_pairs": [
                     {
-                        "question": cc.question_text,
+                        "question": cc.question,
                         "answer": cc.answer.text,
                         # "citations": [vars(c) for c in a.citations]
                     }
@@ -594,10 +602,11 @@ class OverallStatementEvaluator(dspy.Module):
 class FactCheckPipeline:
     def __init__(
         self,
-        search_provider: SearchProvider,
         model_name: str,
         embedding_model: str,
-        retriever_k: int = 10
+        retriever_k: int = 10,
+        search_provider: SearchProvider = None,
+        context: List[Document] = None
     ):
         self.search_provider = search_provider
         self.model_name = model_name
@@ -614,55 +623,18 @@ class FactCheckPipeline:
         self.answer_synthesizer = AnswerSynthesizer()
         self.claim_evaluator = ClaimEvaluator()
         self.overall_statement_evaluator = OverallStatementEvaluator()
-        
+
+        # Add context documents to vector DB
+        if context:
+            self.retriever.add_documents(
+                [doc.content for doc in context],
+                [doc.metadata for doc in context]
+            )
+
         # Chat history for interactive mode, TODO: implement history
         self.chat_history = []
-        
-    def _scrape_webpage(self, url: str) -> Tuple[str, Dict[str, str]]:
-        try:
-            response = requests.get(url, timeout=SCRAPE_TIMEOUT)  # Set a timeout of 5 seconds
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract main content (customize based on website structure)
-            content = ' '.join([p.text for p in soup.find_all('p')])
-            
-            metadata = {
-                "url": url,
-                "title": soup.title.string if soup.title else "",
-                "source": urlparse(url).netloc
-            }
-            
-            return content, metadata
-        except Exception as e:
-            print(f"Error processing {url}: {str(e)}")
-            return "", {}
 
-    def _index_into_retriever(self, query: str, search_results: List[str]) -> List[RetrievedDocument]:  # TODO: combine this   
-        # Process webpages and index content
-        documents = []
-        metadata = []
-        for result in tqdm(search_results, desc="Processing sources", leave=False):
-            # First add source relevant excerpt to documents if available
-            if result.excerpt:
-                documents.append(result.excerpt)
-                metadata.append({
-                    "title": result.title,
-                    "url": result.url,
-                    "source": result.source
-                })
-
-            # Otherwise, scrape the webpage
-            # content, meta = self._process_webpage(result.url)
-            # if content: 
-            #     # Split content into chunks, preserving full sentences
-            #     chunks = chunk_text(content)
-            #     documents.extend(chunks)
-            #     metadata.extend([meta] * len(chunks))
-        
-        self.retriever.add_documents(documents, metadata)
-        return self.retriever.retrieve(query, k=self.retriever_k)
-
-    def fact_check(self, statement: str) -> List[Claim]:
+    def fact_check(self, statement: str, context: Dict[str, Dict] = None, web_search: bool = True) -> List[Claim]:
         if VERBOSE:
             print_header("Starting Fact Check Pipeline", level=0, decorator='=')
             print_header(f"Original Statement: {colored(statement, 'white')}", level=0)
@@ -677,23 +649,36 @@ class FactCheckPipeline:
             for component_i, component in enumerate(components, 1):
                 if VERBOSE:
                     print_header(f"Question Answering for Component [{component_i}/{len(components)}]", level=3, decorator='=')
-                    print_header(f"Question: {colored(component.question_text, 'yellow')}", level=4)
+                    print_header(f"Question: {colored(component.question, 'yellow')}", level=4)
                     print_header(f"Search Queries: {colored(component.search_queries, 'yellow')}", level=4)
 
                 # Step 3: Search and retrieve
                 relevant_docs = []
                 for query_i, query in enumerate(component.search_queries, 1): 
-                    if VERBOSE: 
-                        print_header(f"Web Search for Query [{query_i}/{len(component.search_queries)}]", level=4, decorator='=')
-                        print_header(f"Query: {colored(query, 'yellow')}", level=4)
-                    # Perform web search
-                    search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
-                    
-                    # Get relevant documents
-                    docs = self._index_into_retriever(query, search_results)
-                    relevant_docs.extend(docs)
+                    if VERBOSE: print_header(f"Web Search for Query [{query_i}/{len(component.search_queries)}]", level=4, decorator='=')
+                    print_header(f"Query: {colored(query, 'yellow')}", level=4)
 
-                # Step 4: Synthesize answer
+                    # If web search is enabled, perform web search
+                    if web_search:
+                        # Perform web search
+                        search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
+                        
+                        # Save documents (search results) to vector DB, TODO: you can provide your own documents
+                        documents, metadata = [], []
+                        for result in tqdm(search_results, desc="Processing sources"):
+                            if result.excerpt:
+                                documents.append(result.excerpt) # Use the excerpt as the document content in this case
+                                metadata.append({
+                                    "title": result.title,
+                                    "url": result.url,
+                                    "source": result.source
+                                })
+                        self.retriever.add_documents(documents, metadata)
+
+                    # Get ONLY **relevant** documents (search results)
+                    relevant_docs.extend(self.retriever.retrieve(query, k=self.retriever_k))
+
+                # Step 4: Synthesize answer given relevant documents
                 if VERBOSE: print_header(f"Synthesizing Answer [{component_i}/{len(components)}]", level=3, decorator='=')
                 answer = self.answer_synthesizer(
                     component=component,
@@ -707,9 +692,7 @@ class FactCheckPipeline:
             # Step 5: Evaluate claim
             verdict, confidence, reasoning = self.claim_evaluator(claim=claim)
             # Set claim attributes
-            claim.verdict = verdict
-            claim.confidence = confidence
-            claim.reasoning = reasoning
+            claim.verdict, claim.confidence, claim.reasoning = verdict, confidence, reasoning
 
         # If multiple claims, do verdict for entire statement
         if len(claims) > 1:
@@ -736,7 +719,7 @@ class FactCheckPipeline:
                 
                 for j, component in enumerate(claim.components, 1):
                     print_header(f"Component {j}", level=2)
-                    print_header("Question: " + colored(component.question_text, 'yellow'), level=3)
+                    print_header("Question: " + colored(component.question, 'yellow'), level=3)
                     print_header("Answer: " + colored(component.answer.text, 'green'), level=3)
                     print_header("Citations: ", level=3)
                     for k, citation in enumerate(component.answer.citations, 1):
@@ -766,12 +749,26 @@ if __name__ == "__main__":
     INTERACTIVE = False # Allow the user to provide feedback
     USE_BM25 = True # Use BM25 for retrieval (in addition to cosine similarity)
     BM25_WEIGHT = 0.5 # Weight for BM25 in the hybrid retrieval
+   
+    source_doc = """
+    OpenAI o1 is a generative pre-trained transformer (GPT). A preview of o1 was released by OpenAI on September 12, 2024. o1 spends time "thinking" before it answers, making it better at complex reasoning tasks, science and programming than GPT-4o.[1] The full version was released to ChatGPT users on December 5, 2024.
+
+    Capabilities
+    According to OpenAI, o1 has been trained using a new optimization algorithm and a dataset specifically tailored to it; while also meshing in reinforcement learning into its training.[7] OpenAI described o1 as a complement to GPT-4o rather than a successor.[10][11]
+
+    o1 spends additional time thinking (generating a chain of thought) before generating an answer, which makes it better for complex reasoning tasks, particularly in science and mathematics.[1] Compared to previous models, o1 has been trained to generate long "chains of thought" before returning a final answer.[12][13] According to Mira Murati, this ability to think before responding represents a new, additional paradigm, which is improving model outputs by spending more computing power when generating the answer, whereas the model scaling paradigm improves outputs by increasing the model size, training data and training compute power.[10] OpenAI's test results suggest a correlation between accuracy and the logarithm of the amount of compute spent thinking before answering.[13][12]
+
+    o1-preview performed approximately at a PhD level on benchmark tests related to physics, chemistry, and biology. On the American Invitational Mathematics Examination, it solved 83% (12.5/15) of the problems, compared to 13% (1.8/15) for GPT-4o. It also ranked in the 89th percentile in Codeforces coding competitions.[14] o1-mini is faster and 80% cheaper than o1-preview. It is particularly suitable for programming and STEM-related tasks, but does not have the same "broad world knowledge" as o1-preview.[15]
+
+    OpenAI noted that o1's reasoning capabilities make it better at adhering to safety rules provided in the prompt's context window. OpenAI reported that during a test, one instance of o1-preview exploited a misconfiguration to succeed at a task that should have been infeasible due to a bug.[16][17] OpenAI also granted early access to the UK and US AI Safety Institutes for research, evaluation, and testing. According to OpenAI's assessments, o1-preview and o1-mini crossed into "medium risk" in CBRN (biological, chemical, radiological, and nuclear) weapons. Dan Hendrycks wrote that "The model already outperforms PhD scientists most of the time on answering questions related to bioweapons." He suggested that these concerning capabilities will continue to increase.[18]
+    """
 
     pipeline = FactCheckPipeline(
-        search_provider=search_provider,
         model_name=lm,
         embedding_model=embedding_model,
-        retriever_k=2
+        search_provider=search_provider,
+        context=[Document(content=source_doc, metadata={"title": "OpenAI o1", "url": "https://en.wikipedia.org/wiki/OpenAI_o1"})],
+        retriever_k=2,
     )
 
     # Example statement to fact-check
@@ -780,10 +777,9 @@ if __name__ == "__main__":
     # rich and poor was shrinking. The savings rate for black Americans was 
     # the highest in the history of our country."""
 
-    # statement = """The US economy is in a recession now in 2024."""
-
-    statement = "In New York, there are no barriers to law enforcement to work with the federal government on immigration laws, and there are 100 crimes where migrants can be handed over."
-    verdict, confidence, reasoning, claims = pipeline.fact_check(statement)
+    # statement = "In New York, there are no barriers to law enforcement to work with the federal government on immigration laws, and there are 100 crimes where migrants can be handed over."
+    statement = "OpenAI o1 can perform at a PhD level in physics."
+    verdict, confidence, reasoning, claims = pipeline.fact_check(statement, web_search=False)
 
     # Print final result
     print("\nFinal Fact-Check Result:")
