@@ -641,7 +641,7 @@ class FactCheckPipeline:
         # Process webpages and index content
         documents = []
         metadata = []
-        for result in tqdm(search_results, desc="Processing sources"):
+        for result in tqdm(search_results, desc="Processing sources", leave=False):
             # First add source relevant excerpt to documents if available
             if result.excerpt:
                 documents.append(result.excerpt)
@@ -683,8 +683,9 @@ class FactCheckPipeline:
                 # Step 3: Search and retrieve
                 relevant_docs = []
                 for query_i, query in enumerate(component.search_queries, 1): 
-                    if VERBOSE: print_header(f"Web Search for Query [{query_i}/{len(component.search_queries)}]", level=4, decorator='=')
-                    print_header(f"Query: {colored(query, 'yellow')}", level=4)
+                    if VERBOSE: 
+                        print_header(f"Web Search for Query [{query_i}/{len(component.search_queries)}]", level=4, decorator='=')
+                        print_header(f"Query: {colored(query, 'yellow')}", level=4)
                     # Perform web search
                     search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
                     
