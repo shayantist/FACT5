@@ -250,7 +250,6 @@ class VectorStore:
         embeddings = self.encoder.encode(
             all_chunks,
             convert_to_tensor=True,
-            show_progress_bar=True
         )
         
         # Initialize or update FAISS index
@@ -310,7 +309,7 @@ class ClaimExtractorSignature(dspy.Signature):
     # # """
     """Extract specific, testable factual claims from the given text ONLY.
     Requirements:
-    1. Each claim must contain the required context to verify it (e.g., specific time period in years, location, entities involved, etc.). Repeat the context across multiple claims if necessary.
+    1. If context is included in the text to help verify it (e.g., specific time period in years, location, entities involved, etc.), include the context across multiple claims if necessary. Do not make up a context if it is not present in the text.
     2. Focus on single, verifiable ideas
     3. Maintain clarity and coherence
     4. If a statement is atomic, keep it as is
@@ -326,7 +325,7 @@ class ClaimExtractorSignature(dspy.Signature):
     #         }
     #     ]
     # }""")
-    claims = dspy.OutputField(desc="""Pythonic list of claims containing required context for independent verification (e.g., "The wage gap between rich and poor was shrinking during the Trump administration in 2016-2020.")""")
+    claims = dspy.OutputField(desc="""Pythonic list of claims containing required context for independent verification""")
 
 class ClaimExtractor(dspy.Module):
     def __init__(self):
@@ -655,8 +654,9 @@ class FactCheckPipeline:
                 # Step 3: Search and retrieve
                 relevant_docs = []
                 for query_i, query in enumerate(component.search_queries, 1): 
-                    if VERBOSE: print_header(f"Web Search for Query [{query_i}/{len(component.search_queries)}]", level=4, decorator='=')
-                    print_header(f"Query: {colored(query, 'yellow')}", level=4)
+                    if VERBOSE: 
+                        print_header(f"Web Search for Query [{query_i}/{len(component.search_queries)}]", level=4, decorator='=')
+                        print_header(f"Query: {colored(query, 'yellow')}", level=4)
 
                     # If web search is enabled, perform web search
                     if web_search:
@@ -665,7 +665,7 @@ class FactCheckPipeline:
                         
                         # Save documents (search results) to vector DB, TODO: you can provide your own documents
                         documents, metadata = [], []
-                        for result in tqdm(search_results, desc="Processing sources"):
+                        for result in tqdm(search_results, desc="Processing sources", leave=False):
                             if result.excerpt:
                                 documents.append(result.excerpt) # Use the excerpt as the document content in this case
                                 metadata.append({
@@ -767,7 +767,7 @@ if __name__ == "__main__":
         model_name=lm,
         embedding_model=embedding_model,
         search_provider=search_provider,
-        context=[Document(content=source_doc, metadata={"title": "OpenAI o1", "url": "https://en.wikipedia.org/wiki/OpenAI_o1"})],
+        # context=[Document(content=source_doc, metadata={"title": "OpenAI o1", "url": "https://en.wikipedia.org/wiki/OpenAI_o1"})],
         retriever_k=2,
     )
 
