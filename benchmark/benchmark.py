@@ -19,6 +19,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, choices=['mistral', 'gemini', 'llama', 'deepseek'])
 parser.add_argument('--num_trials', type=int, default=3)
+parser.add_argument('--output_file', type=str, default=f'results_v2_{parser.parse_args().model}.pkl')
 args = parser.parse_args()
 
 def print_final_result(statement, verdict, confidence, reasoning, gold_verdict=None):
@@ -30,8 +31,9 @@ def print_final_result(statement, verdict, confidence, reasoning, gold_verdict=N
     if gold_verdict: print_header(f"Gold Verdict: {colored(gold_verdict, 'green')}", level=1)
 
 ### Load data
-if os.path.exists('results_v2.pkl'):
-    df = pd.read_pickle('results_v2.pkl')
+output_file = args.output_file
+if os.path.exists(output_file):
+    df = pd.read_pickle(output_file)
 else: 
     df = pd.read_csv('../data/[FINAL] Pilot - Pilot Claims copy.csv')
 
@@ -77,10 +79,13 @@ for index in tqdm(range(len(df))):
     # If results already exist, skip if num_trials is reached
     if df.loc[index, f'{model}_results'] is not None: 
         if len(df.loc[index, f'{model}_results']) == num_trials:
+            print(f"Skipping {index} because {model}_results already has {num_trials} trials")
             continue
         else:
+            print(f"Running {index} because {model}_results has {len(df.loc[index, f'{model}_results'])}/{num_trials} trials")
             results = df.loc[index, f'{model}_results']
     else: 
+        print(f"Running {index} because {model}_results has 0/{num_trials} trials")
         results = []
 
     for trial_i in tqdm(range(num_trials-len(results)), leave=False):
@@ -102,4 +107,4 @@ for index in tqdm(range(len(df))):
         })
         df.at[index, f'{model}_results'] = results
 
-        df.to_pickle('results_v2.pkl')
+        df.to_pickle(output_file)

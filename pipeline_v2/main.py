@@ -398,6 +398,9 @@ class ClaimDecomposer(dspy.Module):
         try:
             result = self.decompose(claim=claim.text)
             data = json_repair.loads(result["questions"])
+            
+            # Error handling: if data is already a list, convert to dict
+            if isinstance(data, list): data = {"questions": data}
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(claim=claim)
@@ -556,8 +559,9 @@ class ClaimEvaluator(dspy.Module):
 
 ## OVERALL STATEMENT EVALUATOR (SET OF CLAIMS) ##
 class OverallStatementEvaluatorSignature(dspy.Signature):
-    """Calculate overall verdict based on atomic claims."""
-    claims = dspy.InputField(desc="List of evaluated atomic claims, and associated question-answer pairs")
+    """Calculate ONE overall verdict for the entire statement based on the verdicts of each atomic claim."""
+    statement = dspy.InputField(desc="The statement to evaluate")
+    claims = dspy.InputField(desc="List of evaluated atomic claims derived from the statement, and associated question-answer pairs")
     overall_verdict = dspy.OutputField(desc=f"""JSON object containing:
     {{
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
@@ -569,7 +573,7 @@ class OverallStatementEvaluator(dspy.Module):
         super().__init__()
         self.evaluate = dspy.ChainOfThought(OverallStatementEvaluatorSignature)
 
-    def forward(self, claims: List[Claim]) -> Tuple[str, float, str]:
+    def forward(self, statement: str, claims: List[Claim]) -> Tuple[str, float, str]:
         # Unwrap claims into claim text, qa_pairs, and verdicts
         claims_dict = [
             {
@@ -588,6 +592,7 @@ class OverallStatementEvaluator(dspy.Module):
         ]
 
         result = self.evaluate(
+            statement=statement,
             claims=json.dumps(claims_dict, indent=2)
         )
         
@@ -646,6 +651,10 @@ class FactCheckPipeline:
             # Step 2: Decompose claim into components (questions and search queries)
             if VERBOSE: print_header(f"Claim Decomposition [{claim_i}/{len(claims)}]", level=2, decorator='=')
             components = retry_function(self.claim_decomposer, claim) # List of ClaimComponent objects
+            
+            # Error handling: if claim_decomposer returns None, retry
+            if components is None: components = retry_function(self.claim_decomposer, claim)
+
             for component_i, component in enumerate(components, 1):
                 if VERBOSE:
                     print_header(f"Question Answering for Component [{component_i}/{len(components)}]", level=3, decorator='=')
@@ -696,7 +705,7 @@ class FactCheckPipeline:
         if len(claims) > 1:
             # Step 6: Evaluate overall statement
             if VERBOSE: print_header("Overall Statement Evaluation", level=1, decorator='=')
-            overall_verdict, overall_confidence, overall_reasoning = retry_function(self.overall_statement_evaluator, claims)
+            overall_verdict, overall_confidence, overall_reasoning = retry_function(self.overall_statement_evaluator, statement, claims)
             if VERBOSE:
                 print_header(f"Overall Verdict: {colored(overall_verdict, 'green')}", level=2)
                 print_header(f"Overall Confidence: {colored(str(overall_confidence), 'yellow')}", level=2)
@@ -754,7 +763,8 @@ if __name__ == "__main__":
 
     # Initialize DSPy
     # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
-    lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
+    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
+    lm = dspy.LM('ollama_chat/deepseek-r1:7b', api_base='http://localhost:11434', api_key='')
     dspy.settings.configure(lm=lm)
 
     # Predefined knowledge base for the statements (allows for using your own documents instead of/in addition to web search)
@@ -784,5 +794,11 @@ if __name__ == "__main__":
     # statement = """"Crime is down in Venezuela by 67% because they're taking their gangs and their criminals and depositing them very nicely into the United States.”"""
     # verdict, confidence, reasoning, claims = pipeline.fact_check(statement, context="Source: Donald Trump, Date: 2024-04-02")
    
-    statement = """"Support for Roe is higher today in America than it has ever been.”"""
-    verdict, confidence, reasoning, claims = pipeline.fact_check(statement, context="Source: Joe Biden, Date: April 8, 2024")
+    # statement = """"Support for Roe is higher today in America than it has ever been.”"""
+    # verdict, confidence, reasoning, claims = pipeline.fact_check(statement, context="Source: Joe Biden, Date: April 8, 2024")
+
+    statement = """"The National Guard in the HISTORY of its life, gets called in AFTER a disaster, not BEFORE something happens.”"""
+    verdict, confidence, reasoning, claims = pipeline.fact_check(
+        statement=statement, 
+        context=f"Statement Originator: Instagram posts, Date Claim Was Made: April 8, 2024"
+    )
