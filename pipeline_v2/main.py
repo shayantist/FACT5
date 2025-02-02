@@ -307,15 +307,14 @@ class ClaimExtractorSignature(dspy.Signature):
     # #     3. Maintain clarity and coherence
     # #     4. If a statement is atomic, keep it as is
     # # """
-    """Extract specific, testable factual claims from the given text ONLY.
-    Requirements:
-    1. If context is included in the text to help verify it (e.g., specific time period in years, location, entities involved, etc.), include the context across multiple claims if necessary. Do not make up a context if it is not present in the text.
-    2. Focus on single, verifiable ideas
-    3. Maintain clarity and coherence
-    4. If a statement is atomic, keep it as is
-    5. Always extract claims regardless of the content of the context unless the claim is clearly an opinion
+    """Extract specific claims from the given statement.
+    1. Split the statement into multiple claims, but if the statement is atomic (has one main claim), keep it as is.
+    2. If context is included in the statement to help verify it (e.g., specific time period in years, location, entities involved, etc.), include the context across multiple claims if necessary. Do not make up a context if it is not present in the text.
+    3. Consider the source and date of the statement if given.
+    4. Always extract claims regardless of the content
     """
-    text = dspy.InputField(desc="The text to extract claims from")
+    text = dspy.InputField(desc="The statement to extract claims from")
+    context = dspy.InputField(desc="The context for the statement, e.g. 'Source: Donald Trump', 'Date: 2024-01-01', etc.", default="")
     # claims = dspy.OutputField(desc="""JSON object containing:
     # {
     #     "claims": [
@@ -325,21 +324,21 @@ class ClaimExtractorSignature(dspy.Signature):
     #         }
     #     ]
     # }""")
-    claims = dspy.OutputField(desc="""Pythonic list of claims containing required context for independent verification""")
+    claims: list[str] = dspy.OutputField(desc="""List of claims containing required context for independent verification""")
 
 class ClaimExtractor(dspy.Module):
     def __init__(self):
         super().__init__()
         self.extract = dspy.ChainOfThought(ClaimExtractorSignature)
 
-    def forward(self, text: str) -> List[Claim]:
+    def forward(self, text: str, context: str = None) -> List[Claim]:
         # Extract claims with LLM (retry if failed)
         try:
-            result = self.extract(text=text)
-            claims = json_repair.loads(result["claims"])
+            result = self.extract(text=text, context=context)
+            claims = result["claims"]
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
-            return self.forward(text)
+            return self.forward(text, context)
         
         # Error handling for non-factual claims (e.g., opinion)
         if len(claims) == 0:
@@ -432,7 +431,7 @@ class AnswerSynthesizerSignature(dspy.Signature):
     question = dspy.InputField(desc="The question to answer")
     search_queries = dspy.InputField(desc="The search queries used")
     documents = dspy.InputField(desc="Retrieved documents relevant to the question")
-    answer = dspy.OutputField(desc="""JSON object containing: 
+    answer: Answer = dspy.OutputField(desc="""JSON object containing: 
     {
         "text": string, # answer with inline citations (e.g., "The wage gap was shrinking [1]")
         "citations": [{ # list of citations
@@ -464,15 +463,16 @@ class AnswerSynthesizer(dspy.Module):
                     "content": doc.content
                 } for doc in documents]
             )
-            data = json_repair.loads(result["answer"])
+            # data = json_repair.loads(result["answer"])
+            answer = result["answer"]
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(component, documents)
         
-        answer = Answer(
-            text=data["text"],
-            citations=[Citation(**citation) for citation in data["citations"]]
-        )
+        # answer = Answer(
+        #     text=data["text"],
+        #     citations=[Citation(**citation) for citation in data["citations"]]
+        # )
 
         if VERBOSE:
             print_header(f"Answer: {colored(answer.text, 'green')}", level=4)
@@ -633,14 +633,14 @@ class FactCheckPipeline:
         # Chat history for interactive mode, TODO: implement history
         self.chat_history = []
 
-    def fact_check(self, statement: str, context: Dict[str, Dict] = None, web_search: bool = True) -> List[Claim]:
+    def fact_check(self, statement: str, context: str = None, web_search: bool = True) -> List[Claim]:
         if VERBOSE:
             print_header("Starting Fact Check Pipeline", level=0, decorator='=')
             print_header(f"Original Statement: {colored(statement, 'white')}", level=0)
 
         # Step 1: Extract atomic claims
         if VERBOSE: print_header("Atomic Claim Extraction", level=1, decorator='=')
-        claims = self.claim_extractor(statement)
+        claims = self.claim_extractor(statement, context)
         for claim_i, claim in enumerate(claims, 1):
             # Step 2: Decompose claim into components (questions and search queries)
             if VERBOSE: print_header(f"Claim Decomposition [{claim_i}/{len(claims)}]", level=2, decorator='=')
@@ -739,8 +739,8 @@ if __name__ == "__main__":
     search_provider = SearchProvider(provider="duckduckgo")
 
     # Initialize DSPy
-    lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
-    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
+    # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
+    lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
     dspy.settings.configure(lm=lm)
 
     # Initialize pipeline
@@ -769,17 +769,15 @@ if __name__ == "__main__":
         search_provider=search_provider,
         # context=[Document(content=source_doc, metadata={"title": "OpenAI o1", "url": "https://en.wikipedia.org/wiki/OpenAI_o1"})],
         retriever_k=2,
-    )
-
-    # Example statement to fact-check
-    # statement = """And then there's the reality of the Trump economy, 
-    # where wages adjusted for inflation were rising. The wage gap between 
-    # rich and poor was shrinking. The savings rate for black Americans was 
-    # the highest in the history of our country."""
-
+    ) 
     # statement = "In New York, there are no barriers to law enforcement to work with the federal government on immigration laws, and there are 100 crimes where migrants can be handed over."
-    statement = "OpenAI o1 can perform at a PhD level in physics."
-    verdict, confidence, reasoning, claims = pipeline.fact_check(statement, web_search=False)
+    # statement = "OpenAI o1 can perform at a PhD level in physics."
+
+    # statement = """"Crime is down in Venezuela by 67% because they're taking their gangs and their criminals and depositing them very nicely into the United States.”"""
+    # verdict, confidence, reasoning, claims = pipeline.fact_check(statement, context="Source: Donald Trump, Date: 2024-04-02")
+   
+    statement = """"Support for Roe is higher today in America than it has ever been.”"""
+    verdict, confidence, reasoning, claims = pipeline.fact_check(statement, context="Source: Joe Biden, Date: April 8, 2024")
 
     # Print final result
     print("\nFinal Fact-Check Result:")
