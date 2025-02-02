@@ -2,6 +2,7 @@ import re
 import json
 from typing import Dict, List
 from termcolor import colored
+import time
 
 # def print_header(text, level=0, decorator='=', decorator_len=5):
 #     """Print a header with a given decorator and text."""
@@ -60,3 +61,27 @@ def chunk_text(text: str, max_chunk_size: int = 1000, max_overlap: int = 200) ->
     if current_chunk.strip(): chunks.append(current_chunk.strip())
 
     return chunks
+
+def retry_function(func, *args, max_retries=5, **kwargs):
+    """
+    Retries a function with its parameters up to a maximum number of times.
+
+    Args:
+        func: The function to retry.
+        *args: Positional arguments to pass to the function.
+        max_retries: The maximum number of retry attempts (default: 5).
+        **kwargs: Keyword arguments to pass to the function.
+
+    Returns:
+        The result of the function if successful, or None if all retries fail.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = func(*args, **kwargs)
+            return result  # Return the result if successful
+        except Exception as e:
+            print(colored(f"Attempt {attempt + 1} failed: {e}", "red"))
+            if attempt < max_retries - 1:
+                time.sleep(1)  # Wait for 1 second before retrying
+    print(colored(f"Function failed after {max_retries} attempts.", "red"))
+    return None  # Return None if all retries fail
