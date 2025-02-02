@@ -20,7 +20,7 @@ from sentence_transformers import SentenceTransformer
 from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 
-from utils import chunk_text, print_header
+from utils import chunk_text, print_header, retry_function
 
 @dataclass
 class Citation:
@@ -38,7 +38,6 @@ class Answer:
 class ClaimComponent: 
     question: str
     search_queries: List[str]
-    component_type: str = None
     answer: Optional[Answer] = None
 
 @dataclass
@@ -309,12 +308,13 @@ class ClaimExtractorSignature(dspy.Signature):
     # # """
     """Extract specific claims from the given statement.
     1. Split the statement into multiple claims, but if the statement is atomic (has one main claim), keep it as is.
-    2. If context is included in the statement to help verify it (e.g., specific time period in years, location, entities involved, etc.), include the context across multiple claims if necessary. Do not make up a context if it is not present in the text.
-    3. Consider the source and date of the statement if given.
-    4. Always extract claims regardless of the content
+    2. If context is included (e.g., time, location, source/speaker who made the statement, etc.), include the context in each claim to help verify it. Do not make up a context if it is not present in the text.
+    3. Consider the source (e.g. name of the speaker, organization, etc.) and date of the statement if given in the context, and include them in each claim. 
+    4. Each claim should be independent of each other and not refer to other claims.
+    5. Always extract claims regardless of the content
     """
-    text = dspy.InputField(desc="The statement to extract claims from")
-    context = dspy.InputField(desc="The context for the statement, e.g. 'Source: Donald Trump', 'Date: 2024-01-01', etc.", default="")
+    statement = dspy.InputField(desc="The statement to extract claims from")
+    context = dspy.InputField(desc="The context for the statement (e.g. source, date, etc.)", default="")
     # claims = dspy.OutputField(desc="""JSON object containing:
     # {
     #     "claims": [
@@ -324,21 +324,21 @@ class ClaimExtractorSignature(dspy.Signature):
     #         }
     #     ]
     # }""")
-    claims: list[str] = dspy.OutputField(desc="""List of claims containing required context for independent verification""")
+    claims: list[str] = dspy.OutputField(desc="""List of claims, with each claim containing required context for independent verification""")
 
 class ClaimExtractor(dspy.Module):
     def __init__(self):
         super().__init__()
         self.extract = dspy.ChainOfThought(ClaimExtractorSignature)
 
-    def forward(self, text: str, context: str = None) -> List[Claim]:
+    def forward(self, statement: str, context: str = None) -> List[Claim]:
         # Extract claims with LLM (retry if failed)
         try:
-            result = self.extract(text=text, context=context)
+            result = self.extract(statement=statement, context=context)
             claims = result["claims"]
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
-            return self.forward(text, context)
+            return self.forward(statement, context)
         
         # Error handling for non-factual claims (e.g., opinion)
         if len(claims) == 0:
@@ -361,8 +361,8 @@ class ClaimExtractor(dspy.Module):
                     elif feedback == "no":
                         feedback = input("Please provide feedback on what's wrong: ")
                         # Regenerate claims with feedback (TODO: implement history)
-                        text = f"{text} {feedback}"
-                        return self.forward(text=text)
+                        statement = f"{statement} {feedback}"
+                        return self.forward(statement=statement)
                         # claims = json.loads(result)["claims"]
                         # print("\nRegenerated Claims:")
                         # for i, claim in enumerate(claims, 1):
@@ -633,18 +633,19 @@ class FactCheckPipeline:
         # Chat history for interactive mode, TODO: implement history
         self.chat_history = []
 
-    def fact_check(self, statement: str, context: str = None, web_search: bool = True) -> List[Claim]:
+    def fact_check(self, statement: str, context: str = None, web_search: bool = True):
         if VERBOSE:
             print_header("Starting Fact Check Pipeline", level=0, decorator='=')
             print_header(f"Original Statement: {colored(statement, 'white')}", level=0)
+            if context: print_header(f"Context: {colored(context, 'white')}", level=0)
 
         # Step 1: Extract atomic claims
         if VERBOSE: print_header("Atomic Claim Extraction", level=1, decorator='=')
-        claims = self.claim_extractor(statement, context)
+        claims = retry_function(self.claim_extractor, statement, context)
         for claim_i, claim in enumerate(claims, 1):
             # Step 2: Decompose claim into components (questions and search queries)
             if VERBOSE: print_header(f"Claim Decomposition [{claim_i}/{len(claims)}]", level=2, decorator='=')
-            components = self.claim_decomposer(claim) # List of ClaimComponent objects
+            components = retry_function(self.claim_decomposer, claim) # List of ClaimComponent objects
             for component_i, component in enumerate(components, 1):
                 if VERBOSE:
                     print_header(f"Question Answering for Component [{component_i}/{len(components)}]", level=3, decorator='=')
@@ -661,7 +662,7 @@ class FactCheckPipeline:
                     # If web search is enabled, perform web search
                     if web_search:
                         # Perform web search
-                        search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
+                        search_results = retry_function(self.search_provider.search, query, NUM_SEARCH_RESULTS)
                         
                         # Save documents (search results) to vector DB, TODO: you can provide your own documents
                         documents, metadata = [], []
@@ -680,17 +681,14 @@ class FactCheckPipeline:
 
                 # Step 4: Synthesize answer given relevant documents
                 if VERBOSE: print_header(f"Synthesizing Answer [{component_i}/{len(components)}]", level=3, decorator='=')
-                answer = self.answer_synthesizer(
-                    component=component,
-                    documents=relevant_docs
-                )
+                answer = retry_function(self.answer_synthesizer, component, documents=relevant_docs)
                 component.answer = answer # Set answer to the question
 
             # Set claim components (questions and answers)
             claim.components = components
 
             # Step 5: Evaluate claim
-            verdict, confidence, reasoning = self.claim_evaluator(claim=claim)
+            verdict, confidence, reasoning = retry_function(self.claim_evaluator, claim)
             # Set claim attributes
             claim.verdict, claim.confidence, claim.reasoning = verdict, confidence, reasoning
 
@@ -698,7 +696,7 @@ class FactCheckPipeline:
         if len(claims) > 1:
             # Step 6: Evaluate overall statement
             if VERBOSE: print_header("Overall Statement Evaluation", level=1, decorator='=')
-            overall_verdict, overall_confidence, overall_reasoning = self.overall_statement_evaluator(claims)
+            overall_verdict, overall_confidence, overall_reasoning = retry_function(self.overall_statement_evaluator, claims)
             if VERBOSE:
                 print_header(f"Overall Verdict: {colored(overall_verdict, 'green')}", level=2)
                 print_header(f"Overall Confidence: {colored(str(overall_confidence), 'yellow')}", level=2)
@@ -726,30 +724,40 @@ class FactCheckPipeline:
                         print_header(f"[{k}] " + colored(citation.snippet, 'yellow'), level=4)
                         print_header(f"Source: {citation.source_title} ({citation.source_url})", level=4)
 
+        if VERBOSE:
+            # Print final result
+            print("\nFinal Fact-Check Result:")
+            print_header(f"Statement: {colored(statement, 'white')}", level=1)
+            print_header(f"Overall Verdict: {colored(overall_verdict, 'green')}", level=1)
+            print_header(f"Overall Confidence: {colored(str(overall_confidence), 'yellow')}", level=1)
+            print_header(f"Overall Reasoning: {colored(overall_reasoning, 'cyan')}", level=1)
+
         return overall_verdict, overall_confidence, overall_reasoning, claims
+
+# Constants for whole pipeline
+VERBOSE = True # Print intermediate results
+INTERACTIVE = False # Allow the user to provide feedback
+
+# Constants for Search Provider
+NUM_SEARCH_RESULTS = 10 # Number of search results to retrieve
+SCRAPE_TIMEOUT = 5 # Timeout for scraping a webpage (in seconds)
+
+# Constants for Retrieval (Vector DB + BM25)
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+USE_BM25 = True # Use BM25 for retrieval (in addition to cosine similarity)
+BM25_WEIGHT = 0.5 # Weight for BM25 in the hybrid retrieval
 
 # Example usage
 if __name__ == "__main__":
     import dotenv
     dotenv.load_dotenv('../.env')
 
-    # Initialize search provider
-    NUM_SEARCH_RESULTS = 10 # Number of search results to retrieve
-    SCRAPE_TIMEOUT = 5 # Timeout for scraping a webpage (in seconds)
-    search_provider = SearchProvider(provider="duckduckgo")
-
     # Initialize DSPy
     # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
     lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
     dspy.settings.configure(lm=lm)
 
-    # Initialize pipeline
-    embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-    VERBOSE = True # Print intermediate results
-    INTERACTIVE = False # Allow the user to provide feedback
-    USE_BM25 = True # Use BM25 for retrieval (in addition to cosine similarity)
-    BM25_WEIGHT = 0.5 # Weight for BM25 in the hybrid retrieval
-   
+    # Predefined knowledge base for the statements (allows for using your own documents instead of/in addition to web search)
     source_doc = """
     OpenAI o1 is a generative pre-trained transformer (GPT). A preview of o1 was released by OpenAI on September 12, 2024. o1 spends time "thinking" before it answers, making it better at complex reasoning tasks, science and programming than GPT-4o.[1] The full version was released to ChatGPT users on December 5, 2024.
 
@@ -765,8 +773,8 @@ if __name__ == "__main__":
 
     pipeline = FactCheckPipeline(
         model_name=lm,
-        embedding_model=embedding_model,
-        search_provider=search_provider,
+        embedding_model=EMBEDDING_MODEL,
+        search_provider=SearchProvider(provider="duckduckgo"),
         # context=[Document(content=source_doc, metadata={"title": "OpenAI o1", "url": "https://en.wikipedia.org/wiki/OpenAI_o1"})],
         retriever_k=2,
     ) 
@@ -778,12 +786,3 @@ if __name__ == "__main__":
    
     statement = """"Support for Roe is higher today in America than it has ever been.”"""
     verdict, confidence, reasoning, claims = pipeline.fact_check(statement, context="Source: Joe Biden, Date: April 8, 2024")
-
-    # Print final result
-    print("\nFinal Fact-Check Result:")
-    print_header(f"Statement: {colored(statement, 'white')}", level=1)
-    print_header(f"Overall Verdict: {colored(verdict, 'green')}", level=1)
-    print_header(f"Overall Confidence: {colored(str(confidence), 'yellow')}", level=1)
-    print_header(f"Overall Reasoning: {colored(reasoning, 'cyan')}", level=1)
-    # print(result)
-    # print(json.dumps(result, indent=2))
