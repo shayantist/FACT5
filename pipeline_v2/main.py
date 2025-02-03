@@ -27,12 +27,12 @@ class Citation:
     snippet: str
     source_url: str
     source_title: str
-    relevance_score: float
+    relevance_score: float = None
 
 @dataclass
 class Answer:
     text: str
-    citations: List[Citation]
+    citations: List[Citation] = None
 
 @dataclass
 class ClaimComponent: 
@@ -313,8 +313,7 @@ class ClaimExtractorSignature(dspy.Signature):
     4. Each claim should be independent of each other and not refer to other claims.
     5. Always extract claims regardless of the content
     """
-    statement = dspy.InputField(desc="The statement to extract claims from")
-    context = dspy.InputField(desc="The context for the statement (e.g. source, date, etc.)", default="")
+    statement = dspy.InputField(desc="The statement to extract claims from including any relevant context (e.g. source, speaker, date, etc.)")
     # claims = dspy.OutputField(desc="""JSON object containing:
     # {
     #     "claims": [
@@ -324,21 +323,29 @@ class ClaimExtractorSignature(dspy.Signature):
     #         }
     #     ]
     # }""")
-    claims: list[str] = dspy.OutputField(desc="""List of claims, with each claim containing required context for independent verification""")
+    claims = dspy.OutputField(desc="""JSON object containing:
+    {
+        "claims": [
+            {
+                "text": string, 
+            }
+        ]
+    }""")
 
 class ClaimExtractor(dspy.Module):
     def __init__(self):
         super().__init__()
         self.extract = dspy.ChainOfThought(ClaimExtractorSignature)
 
-    def forward(self, statement: str, context: str = None) -> List[Claim]:
+    def forward(self, statement: str) -> List[Claim]:
         # Extract claims with LLM (retry if failed)
         try:
-            result = self.extract(statement=statement, context=context)
-            claims = result["claims"]
+            result = self.extract(statement=statement)
+            claims = json_repair.loads(str(result["claims"])).get("claims", [])
+            claims = [Claim(text=claim.get("text", "")) for claim in claims]
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
-            return self.forward(statement, context)
+            return self.forward(statement)
         
         # Error handling for non-factual claims (e.g., opinion)
         if len(claims) == 0:
@@ -348,7 +355,7 @@ class ClaimExtractor(dspy.Module):
         if VERBOSE or INTERACTIVE:
             print_header(f"Extracted Claims ({len(claims)}): ", level=1)
             for i, claim in enumerate(claims, 1):
-                print_header(f"{i}. {colored(claim, 'white')}", level=2, decorator='')
+                print_header(f"{i}. {colored(claim.text, 'white')}", level=2, decorator='')
                 # print_header(f"  Reasoning: {claim['reasoning']}", level=3)
         
         # If interactive, allow user to provide feedback to regenerate claims
@@ -372,11 +379,12 @@ class ClaimExtractor(dspy.Module):
                     print("\nProcess interrupted. Exiting...")
                     exit(0)
         
-        return [Claim(text=claim) for claim in claims]
+        return claims
 
-class ClaimDecomposerSignature(dspy.Signature):
-    """Break down a claim to generate independent questions and search queries to answer it. Be as specific and concise as possible, try to minimize the number of questions and search queries while still being comprehensive to verify the claim."""
-    claim = dspy.InputField(desc="The claim to decompose into components (questions + search queries)")
+class QuestionGeneratorSignature(dspy.Signature):
+    """Break down the given claim derived from the original statement to generate independent questions and search queries to answer it. Be as specific and concise as possible, try to minimize the number of questions and search queries while still being comprehensive to verify the claim."""
+    statement = dspy.InputField(desc="The original statement")
+    claim = dspy.InputField(desc="The claim derived from the original statement to decompose into components (questions + search queries)")
     questions = dspy.OutputField(desc="""JSON object containing:
     {
         "questions": [
@@ -388,19 +396,20 @@ class ClaimDecomposerSignature(dspy.Signature):
     }""")
                 # "component_type": string # type of question (e.g. "metric", "time_period", "comparison", "causal_relation")
 
-class ClaimDecomposer(dspy.Module):
+class QuestionGenerator(dspy.Module):
     def __init__(self):
         super().__init__()
-        self.decompose = dspy.ChainOfThought(ClaimDecomposerSignature)
+        self.generate_qs = dspy.ChainOfThought(QuestionGeneratorSignature)
 
-    def forward(self, claim: Claim) -> List[ClaimComponent]:
+    def forward(self, statement: str, claim: Claim) -> List[ClaimComponent]:
         # Decompose claim into components (questions + search queries) with LLM (retry if failed)
         try:
-            result = self.decompose(claim=claim.text)
-            data = json_repair.loads(result["questions"])
+            result = self.generate_qs(statement=statement, claim=claim.text)
+            data = json_repair.loads(str(result["questions"]))
             
             # Error handling: if data is already a list, convert to dict
             if isinstance(data, list): data = {"questions": data}
+
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(claim=claim)
@@ -422,7 +431,7 @@ class ClaimDecomposer(dspy.Module):
                     feedback = input("Please provide feedback on what's wrong: ")
                     # Regenerate components with feedback (TODO: implement history)
                     result = self.forward(claim=f"{claim.text} {feedback}")    
-                    # data = json_repair.loads(result["components"])
+                    # data = json_repair.loads(str(result["components"]))
                     # print("\nRegenerated Components:")
                     # print(json.dumps(data, indent=2))
 
@@ -434,9 +443,9 @@ class AnswerSynthesizerSignature(dspy.Signature):
     question = dspy.InputField(desc="The question to answer")
     search_queries = dspy.InputField(desc="The search queries used")
     documents = dspy.InputField(desc="Retrieved documents relevant to the question")
-    answer: Answer = dspy.OutputField(desc="""JSON object containing: 
+    answer = dspy.OutputField(desc="""JSON object containing: 
     {
-        "text": string, # answer with inline citations (e.g., "The wage gap was shrinking [1]")
+        "text": string, # answer with inline citations where the number in the brackets is the index of the citation in the citations list (e.g., "The wage gap was shrinking [1]")
         "citations": [{ # list of citations
             "snippet": string,  # exact quote from source
             "source_url": string,
@@ -466,22 +475,36 @@ class AnswerSynthesizer(dspy.Module):
                     "content": doc.content
                 } for doc in documents]
             )
-            # data = json_repair.loads(result["answer"])
-            answer = result["answer"]
+            data = json_repair.loads(str(result["answer"]))
+
+            # Error handling (deepseek): if data is an empty string, check if result is an empty string
+            if data == "" or isinstance(data, list):
+                if result["answer"] != "": 
+                    data = {"text": result["answer"]}
+                else:
+                    raise Exception("Failed to synthesize answer: " + str(result))
+
+            # answer = result["answer"]
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e} \nResponse: {result} \nRegenerating...")
             return self.forward(component, documents)
         
-        # answer = Answer(
-        #     text=data["text"],
-        #     citations=[Citation(**citation) for citation in data["citations"]]
-        # )
+        answer = Answer(
+            text=f"{data.get('text', 'No answer provided.')} \n\nReasoning: {result.reasoning}",
+            citations=[Citation(
+                snippet=c.get("snippet", ""), 
+                source_url=c.get("source_url", ""), 
+                source_title=c.get("source_title", ""), 
+                relevance_score=c.get("relevance_score", None)
+            ) if isinstance(c, dict) else None for c in data.get("citations", [])] if "citations" in data else None
+        )
 
         if VERBOSE:
             print_header(f"Answer: {colored(answer.text, 'green')}", level=4)
-            print_header("Citations: ", level=4)
-            for i, citation in enumerate(answer.citations, 1):
-                print_header(f"[{i}] " + colored(citation.snippet, 'yellow'), level=5)
+            if answer.citations:
+                print_header("Citations: ", level=4)
+                for i, citation in enumerate(answer.citations, 1):
+                    print_header(f"[{i}] " + colored(citation.snippet, 'yellow'), level=5)
                 print_header(f"Source: {citation.source_title} ({citation.source_url})", level=5)
 
         return answer
@@ -500,7 +523,6 @@ class ClaimEvaluatorSignature(dspy.Signature):
     {{
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,  # Between 0 and 1
-        "reasoning": string,
         "evidence_analysis": [
             {{
                 "question": string,
@@ -509,6 +531,7 @@ class ClaimEvaluatorSignature(dspy.Signature):
             }}
         ]
     }}""")
+        # "reasoning": string,
 
 class ClaimEvaluator(dspy.Module):    
     def __init__(self):
@@ -529,10 +552,8 @@ class ClaimEvaluator(dspy.Module):
             claim=claim.text,
             qa_pairs=json.dumps(qa_pairs, indent=2)
         )
-        data = json_repair.loads(result["evaluation"])
-        verdict = data["verdict"]
-        confidence = data["confidence"]
-        reasoning = data["reasoning"]
+        data = json_repair.loads(str(result["evaluation"]))
+        verdict, confidence, reasoning = data["verdict"], data["confidence"], result.reasoning
         
         if VERBOSE or INTERACTIVE:
             print_header("Claim Evaluation", level=2, decorator='=')
@@ -562,7 +583,7 @@ class OverallStatementEvaluatorSignature(dspy.Signature):
     """Calculate ONE overall verdict for the entire statement based on the verdicts of each atomic claim."""
     statement = dspy.InputField(desc="The statement to evaluate")
     claims = dspy.InputField(desc="List of evaluated atomic claims derived from the statement, and associated question-answer pairs")
-    overall_verdict = dspy.OutputField(desc=f"""JSON object containing:
+    overall_verdict: dict = dspy.OutputField(desc=f"""JSON object containing:
     {{
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,
@@ -596,7 +617,7 @@ class OverallStatementEvaluator(dspy.Module):
             claims=json.dumps(claims_dict, indent=2)
         )
         
-        data = json_repair.loads(result["overall_verdict"])
+        data = json_repair.loads(str(result["overall_verdict"]))
         verdict = data["verdict"]
         confidence = data["confidence"]
         reasoning = result["reasoning"]
@@ -618,7 +639,7 @@ class FactCheckPipeline:
         
         # Initialize components
         self.claim_extractor = ClaimExtractor()
-        self.claim_decomposer = ClaimDecomposer()
+        self.question_generator = QuestionGenerator()
         self.retriever = VectorStore(
             model_name=embedding_model,
             use_bm25=USE_BM25,
@@ -638,22 +659,21 @@ class FactCheckPipeline:
         # Chat history for interactive mode, TODO: implement history
         self.chat_history = []
 
-    def fact_check(self, statement: str, context: str = None, web_search: bool = True):
+    def fact_check(self, statement: str, web_search: bool = True):
         if VERBOSE:
             print_header("Starting Fact Check Pipeline", level=0, decorator='=')
             print_header(f"Original Statement: {colored(statement, 'white')}", level=0)
-            if context: print_header(f"Context: {colored(context, 'white')}", level=0)
 
         # Step 1: Extract atomic claims
         if VERBOSE: print_header("Atomic Claim Extraction", level=1, decorator='=')
-        claims = retry_function(self.claim_extractor, statement, context)
+        claims = retry_function(self.claim_extractor, statement)
         for claim_i, claim in enumerate(claims, 1):
             # Step 2: Decompose claim into components (questions and search queries)
-            if VERBOSE: print_header(f"Claim Decomposition [{claim_i}/{len(claims)}]", level=2, decorator='=')
-            components = retry_function(self.claim_decomposer, claim) # List of ClaimComponent objects
+            if VERBOSE: print_header(f"Question Generation [{claim_i}/{len(claims)}]", level=2, decorator='=')
+            components = retry_function(self.question_generator, statement, claim) # List of ClaimComponent objects
             
-            # Error handling: if claim_decomposer returns None, retry
-            if components is None: components = retry_function(self.claim_decomposer, claim)
+            # Error handling: if question_generator returns None, retry
+            if components is None: components = retry_function(self.question_generator, claim)
 
             for component_i, component in enumerate(components, 1):
                 if VERBOSE:
@@ -728,10 +748,11 @@ class FactCheckPipeline:
                     print_header(f"Component {j}", level=2)
                     print_header("Question: " + colored(component.question, 'yellow'), level=3)
                     print_header("Answer: " + colored(component.answer.text, 'green'), level=3)
-                    print_header("Citations: ", level=3)
-                    for k, citation in enumerate(component.answer.citations, 1):
-                        print_header(f"[{k}] " + colored(citation.snippet, 'yellow'), level=4)
-                        print_header(f"Source: {citation.source_title} ({citation.source_url})", level=4)
+                    if component.answer.citations:
+                        print_header("Citations: ", level=3)
+                        for k, citation in enumerate(component.answer.citations, 1):
+                            print_header(f"[{k}] " + colored(citation.snippet, 'yellow'), level=4)
+                            print_header(f"Source: {citation.source_title} ({citation.source_url})", level=4)
 
         if VERBOSE:
             # Print final result
@@ -762,9 +783,9 @@ if __name__ == "__main__":
     dotenv.load_dotenv('../.env')
 
     # Initialize DSPy
-    # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
-    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='')
-    lm = dspy.LM('ollama_chat/deepseek-r1:7b', api_base='http://localhost:11434', api_key='')
+    # lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'), cache=False)
+    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='', cache=False)
+    lm = dspy.LM('ollama_chat/deepseek-r1:7b', api_base='http://localhost:11434', api_key='', cache=False)
     dspy.settings.configure(lm=lm)
 
     # Predefined knowledge base for the statements (allows for using your own documents instead of/in addition to web search)
@@ -786,7 +807,7 @@ if __name__ == "__main__":
         embedding_model=EMBEDDING_MODEL,
         search_provider=SearchProvider(provider="duckduckgo"),
         # context=[Document(content=source_doc, metadata={"title": "OpenAI o1", "url": "https://en.wikipedia.org/wiki/OpenAI_o1"})],
-        retriever_k=2,
+        retriever_k=5,
     ) 
     # statement = "In New York, there are no barriers to law enforcement to work with the federal government on immigration laws, and there are 100 crimes where migrants can be handed over."
     # statement = "OpenAI o1 can perform at a PhD level in physics."
@@ -800,5 +821,5 @@ if __name__ == "__main__":
     statement = """"The National Guard in the HISTORY of its life, gets called in AFTER a disaster, not BEFORE something happens.”"""
     verdict, confidence, reasoning, claims = pipeline.fact_check(
         statement=statement, 
-        context=f"Statement Originator: Instagram posts, Date Claim Was Made: April 8, 2024"
+        context=f"Statement Originator: Instagram posts, Date Claim Was Made: April 02, 2024"
     )
