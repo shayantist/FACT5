@@ -49,7 +49,7 @@ main.VERBOSE = False # Print intermediate results
 
 # Initialize DSPy
 if args.model == 'gemini':
-    lm = dspy.LM('gemini/gemini-1.5-pro', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'), cache=False)
+    lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'), cache=False)
 elif args.model == 'mistral':
     lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='', cache=False)
 elif args.model == 'llama':
@@ -59,13 +59,13 @@ elif args.model == 'deepseek':
 else:
     raise ValueError(f"Model {args.model} not supported")
 
-dspy.settings.configure(lm=lm)
+dspy.settings.configure(lm=lm, temperature=0.3)
 
 pipeline = main.FactCheckPipeline(
     search_provider=main.SearchProvider(provider="duckduckgo"),
     model_name=lm,
     embedding_model=main.EMBEDDING_MODEL,
-    retriever_k=2
+    retriever_k=5
 )
 
 model = args.model
@@ -95,9 +95,10 @@ for index in tqdm(range(len(df))):
         gold_verdict = df.iloc[index]['verdict']
 
         verdict, confidence, reasoning, claims = pipeline.fact_check(
-            statement=statement, 
-            context=f"Statement Originator: {statement_originator}, Date Claim Was Made: {statement_date}"
-        )   
+            statement=f"According to {statement_originator} on {statement_date}, {statement}", 
+            # statement=statement, 
+            # context=f"Statement Originator: {statement_originator}, Date Claim Was Made: {statement_date}"
+        )
         print_final_result(statement, verdict, confidence, reasoning, gold_verdict)
         results.append({
             'verdict': verdict,
