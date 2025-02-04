@@ -3,6 +3,7 @@ import json
 from typing import Dict, List
 from termcolor import colored
 import time
+import traceback
 
 # def print_header(text, level=0, decorator='=', decorator_len=5):
 #     """Print a header with a given decorator and text."""
@@ -75,13 +76,23 @@ def retry_function(func, *args, max_retries=5, **kwargs):
     Returns:
         The result of the function if successful, or None if all retries fail.
     """
-    for attempt in range(max_retries):
+    attempt = 0
+    while attempt < max_retries:
         try:
             result = func(*args, **kwargs)
             return result  # Return the result if successful
         except Exception as e:
-            print(colored(f"Attempt {attempt + 1} failed: {e}", "red"))
-            if attempt < max_retries - 1:
+            # Print a message with the error, the line number, and the traceback
+            print(colored(f"Attempt {attempt + 1} failed:", "red"))
+            print(colored(f"Error: {e}", "red"))
+            print(colored(traceback.format_exc(), "red"))  # Prints the full traceback
+
+            if 'rate limit' in str(e).lower() or 'ratelimit' in str(e).lower():
+                print(colored("Rate limit exceeded. Waiting for 5 seconds before retrying...", "yellow"))
+                time.sleep(5)
+                # attempt += 1
+            elif attempt < max_retries - 1:
                 time.sleep(1)  # Wait for 1 second before retrying
+                attempt += 1
     print(colored(f"Function failed after {max_retries} attempts.", "red"))
     return None  # Return None if all retries fail
