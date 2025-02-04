@@ -44,20 +44,20 @@ else:
     df['statement_date'] = pd.to_datetime(df['statement_date']).dt.strftime("%B %d, %Y")
 
 # Set custom constants for whole pipeline
-main.VERBOSE = False # Print intermediate results
+# main.VERBOSE = False # Print intermediate results
 # main.VERDICTS=["Supported", "Refuted", "Not Enough Evidence", "Conflicting Evidence/Cherry-picking"]
 
 # Initialize DSPy
 if args.model == 'gemini':
     lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'), cache=False)
 elif args.model == 'mistral':
-    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='', cache=False)
-    lm = dspy.LM('openrouter/mistralai/mistral-7b-instruct:free', api_key=os.getenv('OPENROUTER_API_KEY'), cache=False)
+    lm = dspy.LM('ollama_chat/mistral-custom', api_base='http://localhost:11434', api_key='', cache=False, temperature=0.3)
+    # lm = dspy.LM('openrouter/mistralai/mistral-7b-instruct:free', api_key=os.getenv('OPENROUTER_API_KEY'), cache=False)
 elif args.model == 'llama':
     lm = dspy.LM('ollama_chat/llama3.1:8b', api_base='http://localhost:11434', api_key='', cache=False)
 elif args.model == 'deepseek':
-    # lm = dspy.LM('ollama_chat/deepseek-r1:7b', api_base='http://localhost:11434', api_key='', cache=False)
-    lm = dspy.LM('openrouter/deepseek/deepseek-r1-distill-llama-70b:free', api_key=os.getenv('OPENROUTER_API_KEY'), cache=False)
+    lm = dspy.LM('ollama_chat/deepseek-r1:7b-custom', api_base='http://localhost:11434', api_key='', cache=False, temperature=0.3)
+    # lm = dspy.LM('openrouter/deepseek/deepseek-r1-distill-llama-70b:free', api_key=os.getenv('OPENROUTER_API_KEY'), cache=False)
 elif args.model == 'claude':
     lm = dspy.LM('anthropic/claude-3-5-sonnet-20240620', api_key=os.getenv('ANTHROPIC_API_KEY'), cache=False)
 elif args.model == 'gpt4o':

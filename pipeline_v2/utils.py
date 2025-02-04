@@ -91,7 +91,7 @@ def retry_function(func, *args, max_retries=5, **kwargs):
                 print(colored("Rate limit exceeded. Waiting for 5 seconds before retrying...", "yellow"))
                 time.sleep(5)
                 # attempt += 1
-            elif attempt < max_retries - 1:
+            else:
                 time.sleep(1)  # Wait for 1 second before retrying
                 attempt += 1
     print(colored(f"Function failed after {max_retries} attempts.", "red"))
