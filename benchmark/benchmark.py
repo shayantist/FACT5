@@ -17,7 +17,7 @@ import pandas as pd
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, choices=['mistral', 'gemini', 'llama', 'deepseek'])
+parser.add_argument('--model', type=str, choices=['mistral', 'gemini', 'llama', 'deepseek', 'claude', 'gpt4o'])
 parser.add_argument('--num_trials', type=int, default=3)
 parser.add_argument('--output_file', type=str, default=f'results_v2_{parser.parse_args().model}.pkl')
 args = parser.parse_args()
@@ -35,10 +35,10 @@ output_file = args.output_file
 if os.path.exists(output_file):
     df = pd.read_pickle(output_file)
 else: 
-    df = pd.read_csv('../data/[FINAL] Pilot - Pilot Claims copy.csv')
+    df = pd.read_csv('../data/pilot_updated_v2.csv')
 
-    # Drop unneeded columns
-    df.drop(columns=['Assignee', 'questions to verify the statement', 'Gold Label', 'GPT-4-Label', 'Claude3-Sonnet-Label', 'mistral_fs_results', 'mistral_verdicts', 'mistral_fs_label', 'GPT3.5(Claude problem)'], inplace=True)
+    # # Drop unneeded columns
+    df.drop(columns=['Assignee', 'questions to verify the statement', 'Gold Label', 'factcheck_date'], inplace=True)
 
     # Reformat dates
     df['statement_date'] = pd.to_datetime(df['statement_date']).dt.strftime("%B %d, %Y")
@@ -51,11 +51,17 @@ main.VERBOSE = False # Print intermediate results
 if args.model == 'gemini':
     lm = dspy.LM('gemini/gemini-1.5-flash', api_key=os.getenv('GOOGLE_GEMINI_API_KEY'), cache=False)
 elif args.model == 'mistral':
-    lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='', cache=False)
+    # lm = dspy.LM('ollama_chat/mistral', api_base='http://localhost:11434', api_key='', cache=False)
+    lm = dspy.LM('openrouter/mistralai/mistral-7b-instruct:free', api_key=os.getenv('OPENROUTER_API_KEY'), cache=False)
 elif args.model == 'llama':
     lm = dspy.LM('ollama_chat/llama3.1:8b', api_base='http://localhost:11434', api_key='', cache=False)
 elif args.model == 'deepseek':
-    lm = dspy.LM('ollama_chat/deepseek-r1:7b', api_base='http://localhost:11434', api_key='', cache=False)
+    # lm = dspy.LM('ollama_chat/deepseek-r1:7b', api_base='http://localhost:11434', api_key='', cache=False)
+    lm = dspy.LM('openrouter/deepseek/deepseek-r1-distill-llama-70b:free', api_key=os.getenv('OPENROUTER_API_KEY'), cache=False)
+elif args.model == 'claude':
+    lm = dspy.LM('anthropic/claude-3-5-sonnet-20240620', api_key=os.getenv('ANTHROPIC_API_KEY'), cache=False)
+elif args.model == 'gpt4o':
+    lm = dspy.LM('openai/gpt-4o', api_key=os.getenv('OPENAI_API_KEY'), cache=False)
 else:
     raise ValueError(f"Model {args.model} not supported")
 
@@ -79,13 +85,13 @@ for index in tqdm(range(len(df))):
     # If results already exist, skip if num_trials is reached
     if df.loc[index, f'{model}_results'] is not None: 
         if len(df.loc[index, f'{model}_results']) == num_trials:
-            print(f"Skipping {index} because {model}_results already has {num_trials} trials")
+            print(f"Skipping row {index} because {num_trials}/{num_trials} trials completed")
             continue
         else:
-            print(f"Running {index} because {model}_results has {len(df.loc[index, f'{model}_results'])}/{num_trials} trials")
+            print(f"Running row {index} because {len(df.loc[index, f'{model}_results'])}/{num_trials} trials completed")
             results = df.loc[index, f'{model}_results']
     else: 
-        print(f"Running {index} because {model}_results has 0/{num_trials} trials")
+        print(f"Running row {index} because 0/{num_trials} trials completed")
         results = []
 
     for trial_i in tqdm(range(num_trials-len(results)), leave=False):
@@ -95,7 +101,8 @@ for index in tqdm(range(len(df))):
         gold_verdict = df.iloc[index]['verdict']
 
         verdict, confidence, reasoning, claims = pipeline.fact_check(
-            statement=f"According to {statement_originator} on {statement_date}, {statement}", 
+            # statement=f"According to {statement_originator} on {statement_date}, {statement}", 
+            statement=f"On {statement_date}, {statement_originator} claimed: {statement}", 
             # statement=statement, 
             # context=f"Statement Originator: {statement_originator}, Date Claim Was Made: {statement_date}"
         )

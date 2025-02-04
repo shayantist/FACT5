@@ -390,7 +390,7 @@ class QuestionGeneratorSignature(dspy.Signature):
         "questions": [
             {
                 "question": string, # question text (e.g. "What was the GDP growth rate during the Trump administration?")
-                "search_queries": [string], # independent search queries used to answer the question, try to be as specific as possible and avoid redundancy, no more than 2 queries
+                "search_queries": [string], # independent search queries used to answer the question, try to be as specific as possible and avoid redundancy, ~1-2 queries is ideal
             }
         ]
     }""")
