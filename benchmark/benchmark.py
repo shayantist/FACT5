@@ -21,6 +21,8 @@ parser.add_argument('--model', type=str, choices=['mistral', 'gemini', 'llama', 
 parser.add_argument('--num_trials', type=int, default=3)
 parser.add_argument('--output_file', type=str, default=f'results_v2_{parser.parse_args().model}.pkl')
 args = parser.parse_args()
+model = args.model
+num_trials = args.num_trials
 
 def print_final_result(statement, verdict, confidence, reasoning, gold_verdict=None):
     print("\nFinal Fact-Check Result:")
@@ -67,17 +69,15 @@ else:
 
 dspy.settings.configure(lm=lm, temperature=0.3)
 
+# Initialize pipeline
 pipeline = main.FactCheckPipeline(
     search_provider=main.SearchProvider(provider="duckduckgo"),
-    model_name=lm,
+    model_name=lm,  
     embedding_model=main.EMBEDDING_MODEL,
     retriever_k=5
 )
 
-model = args.model
-num_trials = args.num_trials
-
-# If column doesn't exist, create it
+# If pipeline results column doesn't exist, create it
 if f'{model}_results' not in df.columns: df[f'{model}_results'] = None
 df[f'{model}_results'] = df[f'{model}_results'].astype(object)
 
@@ -115,4 +115,58 @@ for index in tqdm(range(len(df))):
         })
         df.at[index, f'{model}_results'] = results
 
+        df.to_pickle(output_file)
+
+# Initialize baseline
+class StatementFactCheckerSignature(dspy.Signature):
+    f"""Fact check the given statement into one of the following verdicts: {", ".join(main.VERDICTS)}"""
+    statement = dspy.InputField(desc="Statement to evaluate")
+    verdict = dspy.OutputField(desc=f"Truthful classification of the statement into one of the following verdicts: {', '.join(main.VERDICTS)}")
+
+class StatementFactChecker(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.fact_check = dspy.ChainOfThought(StatementFactCheckerSignature)
+
+    def forward(self, statement: str):
+        result = self.fact_check(statement=statement)
+        verdict = result["verdict"]
+        reasoning = result["reasoning"]
+        return verdict, reasoning
+    
+baseline = StatementFactChecker()
+
+# If baseline results column doesn't exist, create it
+if f'{model}_baseline_results' not in df.columns: df[f'{model}_baseline_results'] = None
+df[f'{model}_baseline_results'] = df[f'{model}_baseline_results'].astype(object)
+
+
+for index in tqdm(range(len(df))):
+    # If results already exist, skip if num_trials is reached
+    if df.loc[index, f'{model}_baseline_results'] is not None: 
+        if len(df.loc[index, f'{model}_baseline_results']) == num_trials:
+            print(f"Skipping row {index} because {num_trials}/{num_trials} trials completed")
+            continue
+        else:
+            print(f"Running row {index} because {len(df.loc[index, f'{model}_baseline_results'])}/{num_trials} trials completed")
+            results = df.loc[index, f'{model}_baseline_results']
+    else: 
+        print(f"Running row {index} because 0/{num_trials} trials completed")
+        results = []
+
+    for trial_i in tqdm(range(num_trials-len(results)), leave=False):
+        statement = df.iloc[index]['statement']
+        statement_originator = df.iloc[index]['statement_originator']
+        statement_date = df.iloc[index]['statement_date']
+        gold_verdict = df.iloc[index]['verdict']
+
+        verdict, reasoning = baseline(f"On {statement_date}, {statement_originator} claimed: {statement}")
+        print_final_result(statement, verdict, 'N/A', reasoning, gold_verdict)
+
+        results.append({
+            'verdict': verdict,
+            'reasoning': reasoning
+        })
+
+        df.at[index, f'{model}_baseline_results'] = results
         df.to_pickle(output_file)
