@@ -63,7 +63,7 @@ def chunk_text(text: str, max_chunk_size: int = 1000, max_overlap: int = 200) ->
 
     return chunks
 
-def retry_function(func, *args, max_retries=5, **kwargs):
+def retry_function(func, *args, max_retries=100, **kwargs):
     """
     Retries a function with its parameters up to a maximum number of times.
 

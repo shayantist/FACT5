@@ -17,6 +17,8 @@ from rank_bm25 import BM25Okapi
 import json_repair
 from sentence_transformers import SentenceTransformer
 
+import random
+import subprocess
 from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 
@@ -170,7 +172,8 @@ class SearchProvider:
         # Filter out low-quality results
         filtered_results = [
             result for result in unique_results
-            if self._is_reliable_source(result.url) and
+            # if self._is_reliable_source(result.url) and
+            if not self._is_blacklisted_source(result.url) and
             len(result.excerpt) > 50  # Minimum snippet length
         ]
         
@@ -184,7 +187,7 @@ class SearchProvider:
             reverse=True
         )
         
-        return unique_results
+        return filtered_results
 
     def _is_reliable_source(self, url: str) -> bool:
         """Check if the source is reliable."""
@@ -204,6 +207,17 @@ class SearchProvider:
         domain = urlparse(url).netloc.lower()
         if '.gov' in domain: return True
         return any(rd in domain for rd in reliable_domains)
+    
+    def _is_blacklisted_source(self, url: str) -> bool:
+        """Check if the source is blacklisted."""
+        blacklisted_domains = {
+            'politifact.com',
+            'factcheck.org',
+            'snopes.com',
+            'checkyourfact.com'
+        }
+        domain = urlparse(url).netloc.lower()
+        return any(rd in domain for rd in blacklisted_domains)
     
 class VectorStore:
     def __init__(
@@ -519,7 +533,7 @@ VERDICTS = [
 ]
 
 class ClaimEvaluatorSignature(dspy.Signature):
-    """Evaluate a claim based on questions and answers."""
+    """Evaluate a claim's truthfulness based on questions and answers."""
     claim = dspy.InputField(desc="The claim to evaluate")
     qa_pairs = dspy.InputField(desc="Question-answer pairs with citations")
     evaluation = dspy.OutputField(desc=f"""JSON object containing:
@@ -583,7 +597,7 @@ class ClaimEvaluator(dspy.Module):
 
 ## OVERALL STATEMENT EVALUATOR (SET OF CLAIMS) ##
 class OverallStatementEvaluatorSignature(dspy.Signature):
-    """Calculate ONE overall verdict for the entire statement based on the verdicts of each atomic claim."""
+    """Calculate ONE overall verdict for the entire statement based on the verdicts of each atomic claim. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made."""
     statement = dspy.InputField(desc="The statement to evaluate")
     claims = dspy.InputField(desc="List of evaluated atomic claims derived from the statement, and associated question-answer pairs")
     overall_verdict: dict = dspy.OutputField(desc=f"""JSON object containing:
@@ -772,7 +786,7 @@ VERBOSE = True # Print intermediate results
 INTERACTIVE = False # Allow the user to provide feedback
 
 # Constants for Search Provider
-NUM_SEARCH_RESULTS = 10 # Number of search results to retrieve
+NUM_SEARCH_RESULTS = 20 # Number of search results to retrieve
 SCRAPE_TIMEOUT = 5 # Timeout for scraping a webpage (in seconds)
 
 # Constants for Retrieval (Vector DB + BM25)
