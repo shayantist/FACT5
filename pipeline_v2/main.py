@@ -1,9 +1,6 @@
-import os
-import time
 import json
 import requests
 import itertools
-from bs4 import BeautifulSoup
 from termcolor import colored
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -17,12 +14,16 @@ from rank_bm25 import BM25Okapi
 import json_repair
 from sentence_transformers import SentenceTransformer
 
-import random
-import subprocess
 from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 
 from utils import chunk_text, print_header, retry_function
+
+@dataclass
+class Document:
+    content: str
+    metadata: Dict[str, str]
+    score: float = None
 
 @dataclass
 class Citation:
@@ -35,6 +36,7 @@ class Citation:
 class Answer:
     text: str
     citations: List[Citation] = None
+    retrieved_docs: List[Document] = None
 
 @dataclass
 class ClaimComponent: 
@@ -50,11 +52,6 @@ class Claim:
     confidence: Optional[float] = None
     reasoning: Optional[str] = None
 
-@dataclass
-class Document:
-    content: str
-    metadata: Dict[str, str]
-    score: float = None
 
 @dataclass
 class SearchResult:
@@ -135,28 +132,19 @@ class SearchProvider:
         num_attempts = 3
         wait_time = 2  # seconds between retries
         
-        for attempt in range(num_attempts):
-            try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
-                }
-                results = DDGS(headers=headers).text(query.lower(), max_results=num_results)
-                return [
-                    SearchResult(
-                        title=result["title"], 
-                        url=result["href"], 
-                        excerpt=result["body"],
-                        source=urlparse(result["href"]).netloc.lower(),
-                    )
-                    for result in results
-                ]
-            except Exception as e:
-                if attempt < num_attempts - 1:
-                    print(f"Search error: {str(e)}, waiting {wait_time}s before retry {attempt + 1}/{num_attempts}")
-                    time.sleep(wait_time)
-                    continue
-                else: 
-                    raise Exception(f"Search error: {str(e)}, max attempts reached")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
+        }
+        results = DDGS(headers=headers).text(query.lower(), max_results=num_results)
+        return [
+            SearchResult(
+                title=result["title"], 
+                url=result["href"], 
+                excerpt=result["body"],
+                source=urlparse(result["href"]).netloc.lower(),
+            )
+            for result in results
+        ]
 
         
     def _filter_and_rank_results(self, results: List[SearchResult]) -> List[SearchResult]:
@@ -212,9 +200,18 @@ class SearchProvider:
         """Check if the source is blacklisted."""
         blacklisted_domains = {
             'politifact.com',
-            'factcheck.org',
             'snopes.com',
-            'checkyourfact.com'
+            # Social Media
+            'facebook.com',
+            'twitter.com',
+            'instagram.com',
+            'tiktok.com',
+            'youtube.com',
+            'reddit.com',
+            'pinterest.com',
+            'linkedin.com',
+            # 'factcheck.org',
+            # 'checkyourfact.com'
         }
         domain = urlparse(url).netloc.lower()
         return any(rd in domain for rd in blacklisted_domains)
@@ -312,6 +309,11 @@ class VectorStore:
         
         # Sort results by score in descending order
         return sorted(results, key=lambda x: x.score, reverse=True)
+    
+    def clear(self):
+        self.index = None
+        self.documents = []
+        self.metadata = []
 
 class ClaimExtractorSignature(dspy.Signature):
     # """Extract specific, testable factual claims from the given text."""
@@ -407,7 +409,7 @@ class QuestionGeneratorSignature(dspy.Signature):
         "questions": [
             {
                 "question": string, # question text (e.g. "What was the GDP growth rate during the Trump administration?")
-                "search_queries": [string], # independent search queries used to answer the question, try to be as specific as possible and avoid redundancy, ~1-2 queries is ideal
+                "search_queries": [string], # independent search queries used to answer the question, try to be as specific as possible and avoid redundancy but avoid specific sites and quotes that are too long/specific, ~1-2 queries is ideal
             }
         ]
     }""")
@@ -508,6 +510,7 @@ class AnswerSynthesizer(dspy.Module):
         
         answer = Answer(
             text=f"{data.get('text', 'No answer provided.')} \n\nReasoning: {result.reasoning}",
+            retrieved_docs=documents,
             citations=[Citation(
                 snippet=c.get("snippet", ""), 
                 source_url=c.get("source_url", ""), 
@@ -724,6 +727,12 @@ class FactCheckPipeline:
 
                     # Get ONLY **relevant** documents (search results)
                     relevant_docs.extend(self.retriever.retrieve(query, k=self.retriever_k))
+                
+                if VERBOSE: 
+                    print_header(f"Retrieved {len(relevant_docs)} documents:", level=3, decorator='=')
+                    unique_sources = {doc.metadata['url']: doc.metadata['title'] for doc in relevant_docs}
+                    for url, title in unique_sources.items():
+                        print_header(f"Title: {colored(title, 'yellow')}, URL: {colored(url, 'cyan')}", level=4)
 
                 # Step 4: Synthesize answer given relevant documents
                 if VERBOSE: print_header(f"Synthesizing Answer [{component_i}/{len(components)}]", level=3, decorator='=')
@@ -770,6 +779,12 @@ class FactCheckPipeline:
                         for k, citation in enumerate(component.answer.citations, 1):
                             print_header(f"[{k}] " + colored(citation.snippet, 'yellow'), level=4)
                             print_header(f"Source: {citation.source_title} ({citation.source_url})", level=4)
+                    else:
+                        print_header("No explicit citations made by LM, but relevant documents used to synthesize answer: ")
+                        unique_sources = {doc.metadata['url']: doc.metadata['title'] for doc in component.answer.retrieved_docs}
+                        for url, title in unique_sources.items():
+                            print_header(f"Title: {colored(title, 'yellow')}, URL: {colored(url, 'cyan')}", level=4)
+
 
         if VERBOSE:
             # Print final result
