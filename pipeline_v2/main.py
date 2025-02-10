@@ -801,7 +801,7 @@ VERBOSE = True # Print intermediate results
 INTERACTIVE = False # Allow the user to provide feedback
 
 # Constants for Search Provider
-NUM_SEARCH_RESULTS = 20 # Number of search results to retrieve
+NUM_SEARCH_RESULTS = 10 # Number of search results to retrieve
 SCRAPE_TIMEOUT = 5 # Timeout for scraping a webpage (in seconds)
 
 # Constants for Retrieval (Vector DB + BM25)

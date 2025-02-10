@@ -7,8 +7,8 @@ import os
 from tqdm.auto import tqdm
 
 sys.path.append('../pipeline_v2/')
-import main 
-dotenv.load_dotenv('../.env')
+import main
+dotenv.load_dotenv('../.env', override=True)
 
 from utils import print_header
 
@@ -46,7 +46,8 @@ else:
     df['statement_date'] = pd.to_datetime(df['statement_date']).dt.strftime("%B %d, %Y")
 
 # Set custom constants for whole pipeline
-# main.VERBOSE = False # Print intermediate results
+main.VERBOSE = False # Print intermediate results
+main.NUM_SEARCH_RESULTS = 10
 # main.VERDICTS=["Supported", "Refuted", "Not Enough Evidence", "Conflicting Evidence/Cherry-picking"]
 
 # Initialize DSPy
@@ -69,55 +70,15 @@ else:
 
 dspy.settings.configure(lm=lm, temperature=0.3)
 
-# Initialize pipeline
+# Initialize pipeline and baseline models
 pipeline = main.FactCheckPipeline(
-    search_provider=main.SearchProvider(provider="duckduckgo"),
-    model_name=lm,  
+    # search_provider=main.SearchProvider(provider="duckduckgo"),
+    search_provider=main.SearchProvider(provider="serper", api_key=os.getenv('SERPER_API_KEY')),
+    model_name=lm, 
     embedding_model=main.EMBEDDING_MODEL,
     retriever_k=5
 )
 
-# If pipeline results column doesn't exist, create it
-if f'{model}_results' not in df.columns: df[f'{model}_results'] = None
-df[f'{model}_results'] = df[f'{model}_results'].astype(object)
-
-for index in tqdm(range(len(df))):
-    # If results already exist, skip if num_trials is reached
-    if df.loc[index, f'{model}_results'] is not None: 
-        if len(df.loc[index, f'{model}_results']) == num_trials:
-            print(f"Skipping row {index} because {num_trials}/{num_trials} trials completed")
-            continue
-        else:
-            print(f"Running row {index} because {len(df.loc[index, f'{model}_results'])}/{num_trials} trials completed")
-            results = df.loc[index, f'{model}_results']
-    else: 
-        print(f"Running row {index} because 0/{num_trials} trials completed")
-        results = []
-
-    for trial_i in tqdm(range(num_trials-len(results)), leave=False):
-        statement = df.iloc[index]['statement']
-        statement_originator = df.iloc[index]['statement_originator']
-        statement_date = df.iloc[index]['statement_date']
-        gold_verdict = df.iloc[index]['verdict']
-
-        verdict, confidence, reasoning, claims = pipeline.fact_check(
-            # statement=f"According to {statement_originator} on {statement_date}, {statement}", 
-            statement=f"On {statement_date}, {statement_originator} claimed: {statement}", 
-            # statement=statement, 
-            # context=f"Statement Originator: {statement_originator}, Date Claim Was Made: {statement_date}"
-        )
-        print_final_result(statement, verdict, confidence, reasoning, gold_verdict)
-        results.append({
-            'verdict': verdict,
-            'confidence': confidence,
-            'reasoning': reasoning,
-            'claims': claims
-        })
-        df.at[index, f'{model}_results'] = results
-
-        df.to_pickle(output_file)
-
-# Initialize baseline
 class StatementFactCheckerSignature(dspy.Signature):
     f"""Fact check the given statement into one of the following verdicts: {", ".join(main.VERDICTS)}"""
     statement = dspy.InputField(desc="Statement to evaluate")
@@ -136,37 +97,61 @@ class StatementFactChecker(dspy.Module):
     
 baseline = StatementFactChecker()
 
-# If baseline results column doesn't exist, create it
-if f'{model}_baseline_results' not in df.columns: df[f'{model}_baseline_results'] = None
-df[f'{model}_baseline_results'] = df[f'{model}_baseline_results'].astype(object)
+# Initialize results columns if they don't exist
+for col in [f'{model}_pipeline_results', f'{model}_baseline_results']:
+    if col not in df.columns: 
+        df[col] = None
+    df[col] = df[col].astype(object)
 
-
+# Run experiments for each row
 for index in tqdm(range(len(df))):
-    # If results already exist, skip if num_trials is reached
-    if df.loc[index, f'{model}_baseline_results'] is not None: 
-        if len(df.loc[index, f'{model}_baseline_results']) == num_trials:
-            print(f"Skipping row {index} because {num_trials}/{num_trials} trials completed")
-            continue
-        else:
-            print(f"Running row {index} because {len(df.loc[index, f'{model}_baseline_results'])}/{num_trials} trials completed")
-            results = df.loc[index, f'{model}_baseline_results']
-    else: 
-        print(f"Running row {index} because 0/{num_trials} trials completed")
-        results = []
-
-    for trial_i in tqdm(range(num_trials-len(results)), leave=False):
-        statement = df.iloc[index]['statement']
-        statement_originator = df.iloc[index]['statement_originator']
-        statement_date = df.iloc[index]['statement_date']
-        gold_verdict = df.iloc[index]['verdict']
-
-        verdict, reasoning = baseline(f"On {statement_date}, {statement_originator} claimed: {statement}")
+    # Get current results for both pipeline and baseline
+    pipeline_results = df.loc[index, f'{model}_pipeline_results'] or []
+    baseline_results = df.loc[index, f'{model}_baseline_results'] or []
+    
+    # Skip if both experiments have completed all trials
+    if len(pipeline_results) == num_trials and len(baseline_results) == num_trials:
+        print(f"Skipping row {index} - all trials completed")
+        continue
+        
+    print(f"Running row {index}")
+    print(f"Pipeline: {len(pipeline_results)}/{num_trials} trials completed")
+    print(f"Baseline: {len(baseline_results)}/{num_trials} trials completed")
+    
+    # Get statement data
+    statement = df.iloc[index]['statement']
+    statement_originator = df.iloc[index]['statement_originator']
+    statement_date = df.iloc[index]['statement_date']
+    gold_verdict = df.iloc[index]['verdict']
+    formatted_statement = f"On {statement_date}, {statement_originator} claimed: {statement}"
+        
+    # Run remaining trials for baseline
+    for _ in tqdm(range(num_trials-len(baseline_results)), leave=False, desc="Baseline trials"):
+        verdict, reasoning = baseline(formatted_statement)
+        print("\n=== Baseline Result ===")
         print_final_result(statement, verdict, 'N/A', reasoning, gold_verdict)
-
-        results.append({
+        
+        baseline_results.append({
             'verdict': verdict,
             'reasoning': reasoning
         })
+        df.at[index, f'{model}_baseline_results'] = baseline_results
+        df.to_pickle(output_file)
 
-        df.at[index, f'{model}_baseline_results'] = results
+    # Run remaining trials for pipeline
+    for _ in tqdm(range(num_trials-len(pipeline_results)), leave=False, desc="Pipeline trials"):
+        pipeline.retriever.clear()
+        verdict, confidence, reasoning, claims = pipeline.fact_check(
+            statement=formatted_statement
+        )
+        print("\n=== Pipeline Result ===")
+        print_final_result(statement, verdict, confidence, reasoning, gold_verdict)
+        
+        pipeline_results.append({
+            'verdict': verdict,
+            'confidence': confidence,
+            'reasoning': reasoning,
+            'claims': claims
+        })
+        df.at[index, f'{model}_pipeline_results'] = pipeline_results
         df.to_pickle(output_file)
