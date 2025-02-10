@@ -1,5 +1,7 @@
+import random
 import re
 import json
+import subprocess
 from typing import Dict, List
 from termcolor import colored
 import time
@@ -63,7 +65,7 @@ def chunk_text(text: str, max_chunk_size: int = 1000, max_overlap: int = 200) ->
 
     return chunks
 
-def retry_function(func, *args, max_retries=100, **kwargs):
+def retry_function(func, *args, max_retries=5, retry_delay=2, **kwargs):
     """
     Retries a function with its parameters up to a maximum number of times.
 
@@ -83,16 +85,16 @@ def retry_function(func, *args, max_retries=100, **kwargs):
             return result  # Return the result if successful
         except Exception as e:
             # Print a message with the error, the line number, and the traceback
-            print(colored(f"Attempt {attempt + 1} failed:", "red"))
-            print(colored(f"Error: {e}", "red"))
-            print(colored(traceback.format_exc(), "red"))  # Prints the full traceback
+            print_header(f"Attempt {attempt + 1} failed:", color="red")
+            print_header(f"Error: {e}", color="red")
+            print_header(traceback.format_exc(), color="red")  # Prints the full traceback
 
             if 'rate limit' in str(e).lower() or 'ratelimit' in str(e).lower():
-                print(colored("Rate limit exceeded. Waiting for 5 seconds before retrying...", "yellow"))
-                time.sleep(5)
+                print_header(f"Rate limit exceeded. Waiting for {retry_delay} seconds before retrying...", color="yellow")
+                time.sleep(retry_delay)
                 # attempt += 1
             else:
-                time.sleep(1)  # Wait for 1 second before retrying
+                time.sleep(retry_delay)  # Wait for 1 second before retrying
                 attempt += 1
-    print(colored(f"Function failed after {max_retries} attempts.", "red"))
+    print_header(f"Function failed after {max_retries} attempts.", color="red")
     return None  # Return None if all retries fail
