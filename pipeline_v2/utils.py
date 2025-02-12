@@ -7,6 +7,8 @@ from termcolor import colored
 import time
 import traceback
 
+import dspy
+
 # def print_header(text, level=0, decorator='=', decorator_len=5):
 #     """Print a header with a given decorator and text."""
 #     indent = " " * (level * 2)
@@ -88,6 +90,8 @@ def retry_function(func, *args, max_retries=5, retry_delay=2, **kwargs):
             print_header(f"Attempt {attempt + 1} failed:", color="red")
             print_header(f"Error: {e}", color="red")
             print_header(traceback.format_exc(), color="red")  # Prints the full traceback
+            print_header(f"LM history: ", color="red")
+            dspy.inspect_history(n=1)
 
             if 'rate limit' in str(e).lower() or 'ratelimit' in str(e).lower():
                 print_header(f"Rate limit exceeded. Waiting for {retry_delay} seconds before retrying...", color="yellow")

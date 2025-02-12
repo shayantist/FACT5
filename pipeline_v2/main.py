@@ -95,6 +95,12 @@ class SearchProvider:
 
         filtered_results = self._filter_and_rank_results(results)
 
+        if len(filtered_results) == 0:
+            print_header(f"No relevant sources found for query: {query}", level=1)
+            query = query.replace('\"', '')
+            print_header(f"Retrying with less restrictive quotes: {query}", level=1)
+            return self.search(query, num_results=NUM_SEARCH_RESULTS)
+
         return filtered_results
 
     def _serper_search(self, query: str, num_results: int) -> List[SearchResult]:
@@ -600,10 +606,10 @@ class ClaimEvaluator(dspy.Module):
 
 ## OVERALL STATEMENT EVALUATOR (SET OF CLAIMS) ##
 class OverallStatementEvaluatorSignature(dspy.Signature):
-    """Calculate ONE overall verdict for the entire statement based on the verdicts of each atomic claim. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made."""
+    """Calculate ONE overall verdict for the entire statement based on the verdicts of each atomic claim. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made, who it was made by, or when it was made."""
     statement = dspy.InputField(desc="The statement to evaluate")
     claims = dspy.InputField(desc="List of evaluated atomic claims derived from the statement, and associated question-answer pairs")
-    overall_verdict: dict = dspy.OutputField(desc=f"""JSON object containing:
+    overall_verdict: dict = dspy.OutputField(desc=f"""JSON object containing a single verdict for the entire statement (do not treat each claim as of equal importance, weigh each claim depending on how much the statement depends on it), as well as the confidence score for the overall verdict:
     {{
         "verdict": string,  # Must be one of: {", ".join(VERDICTS)}
         "confidence": float,
@@ -727,6 +733,7 @@ class FactCheckPipeline:
 
                     # Get ONLY **relevant** documents (search results)
                     relevant_docs.extend(self.retriever.retrieve(query, k=self.retriever_k))
+                    
                 
                 if VERBOSE: 
                     print_header(f"Retrieved {len(relevant_docs)} documents:", level=3, decorator='=')
