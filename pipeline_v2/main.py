@@ -407,7 +407,7 @@ class ClaimExtractor(dspy.Module):
         return claims
 
 class QuestionGeneratorSignature(dspy.Signature):
-    """Break down the given claim derived from the original statement to generate independent questions and search queries to answer it. Be as specific and concise as possible, try to minimize the number of questions and search queries while still being comprehensive to verify the claim."""
+    """Break down the given claim derived from the original statement to generate independent questions and search queries to answer it. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made, who it was made by, or when it was made. Be as specific and concise as possible, try to minimize the number of questions and search queries while still being comprehensive to verify the claim."""
     statement = dspy.InputField(desc="The original statement")
     claim = dspy.InputField(desc="The claim derived from the original statement to decompose into components (questions + search queries)")
     questions = dspy.OutputField(desc="""JSON object containing:
