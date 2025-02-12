@@ -4,11 +4,24 @@ import json
 from urllib.parse import urlparse
 
 import sys
-sys.path.append('../pipeline_v2/')
+import os
+if os.path.exists('../pipeline_v2/'):
+    sys.path.append('../pipeline_v2/')
+elif os.path.exists('./pipeline_v2/'):
+    sys.path.append('./pipeline_v2/')
+else:
+    raise ValueError("pipeline_v2 directory not found")
+
 import main
 
 def load_data(seed, model, num_samples=50):
-    df = pd.read_pickle(f'results_v2_{model}.pkl')
+    if os.path.exists(f'results_v2_{model}.pkl'):
+        df = pd.read_pickle(f'results_v2_{model}.pkl')
+    elif os.path.exists(f'./benchmark/results_v2_{model}.pkl'):
+        df = pd.read_pickle(f'./benchmark/results_v2_{model}.pkl')
+    else:
+        raise ValueError(f"results_v2_{model}.pkl not found")
+
     sample_df = df.sample(num_samples, random_state=seed).reset_index(drop=True)
     return sample_df
 
