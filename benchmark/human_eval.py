@@ -18,7 +18,7 @@ else:
 
 import main
 
-def load_data(seed, model, num_samples=50):
+def load_data(seed, model, num_samples=25):
     if os.path.exists(f'results_v2_{model}.pkl'):
         df = pd.read_pickle(f'results_v2_{model}.pkl')
     elif os.path.exists(f'./benchmark/results_v2_{model}.pkl'):
@@ -26,8 +26,8 @@ def load_data(seed, model, num_samples=50):
     else:
         raise ValueError(f"results_v2_{model}.pkl not found")
 
-    sample_df = df.sample(num_samples, random_state=seed).reset_index(drop=True)
-    return sample_df
+    df_sample = df.groupby('verdict', group_keys=False).apply(lambda x: x.sample(num_samples//df['verdict'].nunique(), random_state=seed)).reset_index(drop=True)
+    return df_sample
 
 def main():
     # ----------------------
@@ -97,7 +97,7 @@ def main():
 
     model = st.sidebar.selectbox("Model", ["gemini", "mistral"])
     seed = st.sidebar.number_input("Seed (for random sampling)", value=42, step=1)
-    num_samples = st.sidebar.number_input("Number of samples to evaluate", value=50, step=5)
+    num_samples = st.sidebar.number_input("Number of samples to evaluate", value=25, step=5)
 
     # Initialize session state variables if not present or if model changed
     if "data_loaded" not in st.session_state or st.session_state.curr_model != model:
@@ -187,8 +187,8 @@ def main():
 
             # Display each claim in a collapsible expander
             st.markdown(f"<h3 style='color: {COLOR_HEADER};'>Claims Extracted & Independently Verified: {len(claims)}</h2>", unsafe_allow_html=True)
-            for i, claim in enumerate(claims):
-                with st.expander(f"Claim {i+1} of {len(claims)}"):
+            for i, claim in enumerate(claims, 1):
+                with st.expander(f"Claim {i} of {len(claims)}"):
                     st.markdown(f"<p><strong>Claim:</strong> <span style='color: {COLOR_CLAIM};'>{claim.text}</span></p>", unsafe_allow_html=True)
                     st.markdown(f"<p><strong>Verdict:</strong> <span style='color: {COLOR_VERDICT};'>{claim.verdict}</span></p>", unsafe_allow_html=True)
                     st.markdown(f"<p><strong>Confidence:</strong> <span style='color: {COLOR_CONFIDENCE};'>{claim.confidence}</span></p>", unsafe_allow_html=True)
@@ -199,9 +199,10 @@ def main():
                         with st.container(border=True):
                             answer_text = component.answer.text
                             answer_text = answer_text.replace('\n', ' ')
+                            answer_text = answer_text.split('Reasoning:')[0]
                             st.markdown(
                                 f"<p><strong>Question:</strong> <span style='color: {COLOR_QUESTION};'>{component.question}</span></p>"
-                                f"<p><strong>Answer:</strong> <span style='color: {COLOR_ANSWER};'>{component.answer.text}</span></p>",
+                                f"<p><strong>Answer:</strong> <span style='color: {COLOR_ANSWER};'>{answer_text}</span></p>",
                                 unsafe_allow_html=True)
 
                             if component.answer.citations:
