@@ -1,3 +1,4 @@
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 import json
@@ -86,18 +87,24 @@ def main():
     # ----------------------
     st.sidebar.header("Evaluator Information")
     evaluator = st.sidebar.text_input("Evaluator ID")
+    
+    # Track previous model value
+    if "curr_model" not in st.session_state:
+        st.session_state.curr_model = None
+    
     model = st.sidebar.selectbox("Model", ["gemini", "mistral"])
     seed = st.sidebar.number_input("Seed (for random sampling)", value=42, step=1)
     num_samples = st.sidebar.number_input("Number of samples to evaluate", value=50, step=5)
 
-    # Initialize session state variables if not present
-    if "data_loaded" not in st.session_state:
+    # Initialize session state variables if not present or if model changed
+    if "data_loaded" not in st.session_state or st.session_state.curr_model != model:
         if evaluator and seed is not None:
             st.session_state.sample_df = load_data(seed, model, num_samples=num_samples)
             st.session_state.data_loaded = True
             st.session_state.current_index = 0
             # evaluations stored as a dict: key=index, value=evaluation dict
             st.session_state.evaluations = {}
+            st.session_state.curr_model = model
         else:
             st.sidebar.warning("Please enter your ID to start, and double check your model, seed, and number of samples.")
 
@@ -192,23 +199,23 @@ def main():
                                 unsafe_allow_html=True)
                             
                             if component.answer.citations:
-                                st.markdown(f"<p><strong>Citations:</strong></p>", unsafe_allow_html=True)
+                                st.markdown(f"<p><strong>Explicit citations by the model:</strong></p>", unsafe_allow_html=True)
                                 for j, citation in enumerate(component.answer.citations, 1):
-                                    site = urlparse(citation.source_url).netloc.lower()
-                                    st.markdown(
-                                        f"<p style='margin-left:20px;'><span style='color: {COLOR_CITATION};'>"
-                                        f"[{j}] {citation.snippet} <br>— <a style='margin-left:20px;' href='{citation.source_url}'>{citation.source_title} - {site}</a>"
-                                        f"</span></p>",
-                                        unsafe_allow_html=True)
-                            else: 
-                                st.markdown(f"<p><strong>No explicit citations made by LM, but relevant documents used to synthesize answer:</strong></p>", unsafe_allow_html=True)
-                                if component.answer.retrieved_docs:
-                                    unique_sources = {doc.metadata['url']: (doc.metadata['title'], doc.content) for doc in component.answer.retrieved_docs}
-                                    for url, (title, content) in unique_sources.items():
+                                    if citation: 
+                                        site = urlparse(citation.source_url).netloc.lower()
                                         st.markdown(
                                             f"<p style='margin-left:20px;'><span style='color: {COLOR_CITATION};'>"
-                                            f"{content} — <a href='{url}'>{title}</a></span></p>",
+                                            f"[{j}] {citation.snippet} <br>— <a href='{citation.source_url}'>{citation.source_title} - {site}</a>"
+                                            f"</span></p>",
                                             unsafe_allow_html=True)
+                            # st.markdown(f"<p><strong>No explicit citations made by LM, but relevant documents used to synthesize answer:</strong></p>", unsafe_allow_html=True)
+                            if component.answer.retrieved_docs:
+                                st.markdown(f"<p><strong>Documents used to synthesize answer (implicit citations):</strong></p>", unsafe_allow_html=True)
+                                for i, doc in enumerate(component.answer.retrieved_docs, 1):
+                                    st.markdown(
+                                        f"<p style='margin-left:20px;'><span style='color: {COLOR_CITATION};'>"
+                                        f"[{i}] {doc.content if doc.content else ''} <br>— <a href='{doc.metadata.get('url', '') if doc.metadata else ''}'>{doc.metadata.get('title', '') if doc.metadata else ''}</a></span></p>",
+                                        unsafe_allow_html=True)
 
             # Retrieve previously saved evaluation for current index, if any
             saved_eval = st.session_state.evaluations.get(idx, {})
@@ -232,6 +239,11 @@ def main():
                                                    "INCORRECT ANALYSIS OF RETRIEVED EVIDENCE"],
                                                   key=f"reasons_{idx}",
                                                   default=saved_reasons)
+                
+            # Add a text input for additional comments
+            comments = st.text_area("Additional Comments (optional):",
+                                    key=f"comments_{idx}",
+                                    value=saved_eval.get("comments", ""))
 
             # Buttons for navigation and submission
             col_prev, col_submit, col_next = st.columns(3)
@@ -239,6 +251,9 @@ def main():
             if col_submit.button("Submit Evaluation", key=f"submit_{idx}"):
                 eval_dict = {
                     "evaluator": evaluator,
+                    "model": model,
+                    "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "num_samples": num_samples,
                     "seed": seed,
                     "statement_index": idx,
                     "statement": statement_text,
@@ -246,7 +261,8 @@ def main():
                     "overall_confidence": result['confidence'],
                     "overall_reasoning": reasoning,
                     "llm_evaluation": evaluation,
-                    "disagree_reasons": disagree_reasons
+                    "disagree_reasons": disagree_reasons,
+                    "comments": comments
                 }
                 st.session_state.evaluations[idx] = eval_dict
                 st.success("Evaluation saved for this statement.")
