@@ -4,6 +4,8 @@ import pandas as pd
 import json
 from urllib.parse import urlparse
 
+import torch
+torch.classes.__path__ = []
 
 import sys
 import os
@@ -15,9 +17,6 @@ else:
     raise ValueError("pipeline_v2 directory not found")
 
 import main
-
-# import torch
-# torch.classes.__path__ = []
 
 def load_data(seed, model, num_samples=50):
     if os.path.exists(f'results_v2_{model}.pkl'):
@@ -153,14 +152,14 @@ def main():
         # Allow user to load previously saved progress
         uploaded_file = st.sidebar.file_uploader("Upload Progress (JSON)", type=["json"])
         if uploaded_file is not None:
-            # try:
-            loaded_progress = json.load(uploaded_file)
-            # Merge the uploaded progress into session_state evaluations
-            for key, value in loaded_progress.items():
-                st.session_state.evaluations[int(key)] = value
-            st.sidebar.success("Progress loaded successfully! Click on any statement above for the interface to show your progress. (Current progress is not shown until you click on a statement thanks to a weird bug with Streamlit's `st.rerun()`.)")
-            # except Exception as e:
-            #     st.sidebar.error("Error loading progress file.")
+            try:
+                loaded_progress = json.load(uploaded_file)
+                # Merge the uploaded progress into session_state evaluations
+                for key, value in loaded_progress.items():
+                    st.session_state.evaluations[int(key)] = value
+                st.sidebar.success("Progress loaded successfully! Click on any statement above for the interface to show your progress. (Current progress is not shown until you click on a statement thanks to a weird bug with Streamlit's `st.rerun()`.)")
+            except Exception as e:
+                st.sidebar.error("Error loading progress file.")
 
     # ----------------------
     # Main Content: Display current evaluation if data loaded
@@ -172,16 +171,17 @@ def main():
         if idx < len(sample_df):
             row = sample_df.iloc[idx]
             results = row[f'{model}_pipeline_results']
-            result = results[0]
-            claims = result['claims']
+            best_verdict = row['pipeline_pass3_verdict']
+            best_result = [result for result in results if result['verdict'] == best_verdict][0]
+            claims = best_result['claims']
             statement_text = f"On {row['statement_date']}, {row['statement_originator']} claimed: {row['statement']}"
-            reasoning = result['reasoning'].replace('\n', ' ')
+            reasoning = best_result['reasoning'].replace('\n', ' ')
 
             # Display Statement details (labels uncolored, dynamic content colored)
             st.markdown(f"<h2 style='color: {COLOR_HEADER};'>Statement Evaluation [{idx + 1} of {len(sample_df)}]</h2>", unsafe_allow_html=True)
             st.markdown(f"<p><strong>Statement:</strong> <span style='color: {COLOR_STATEMENT};'>{statement_text}</span></p>", unsafe_allow_html=True)
-            st.markdown(f"<p><strong>Overall Verdict:</strong> <span style='color: {COLOR_VERDICT};'>{row['verdict']}</span></p>", unsafe_allow_html=True)
-            st.markdown(f"<p><strong>Overall Confidence:</strong> <span style='color: {COLOR_CONFIDENCE};'>{result['confidence']}</span></p>", unsafe_allow_html=True)
+            st.markdown(f"<p><strong>Overall Verdict:</strong> <span style='color: {COLOR_VERDICT};'>{best_verdict}</span></p>", unsafe_allow_html=True)
+            st.markdown(f"<p><strong>Overall Confidence:</strong> <span style='color: {COLOR_CONFIDENCE};'>{best_result['confidence']}</span></p>", unsafe_allow_html=True)
             st.markdown(f"<p><strong>Overall Reasoning:</strong> <span style='color: {COLOR_REASONING};'>{reasoning}</span></p>", unsafe_allow_html=True)
             st.markdown("---")
 
@@ -263,8 +263,9 @@ def main():
                     "seed": seed,
                     "statement_index": idx,
                     "statement": statement_text,
-                    "overall_verdict": row['verdict'],
-                    "overall_confidence": result['confidence'],
+                    "gold_verdict": row['verdict'],
+                    "overall_verdict": best_verdict,
+                    "overall_confidence": best_result['confidence'],
                     "overall_reasoning": reasoning,
                     "llm_evaluation": evaluation,
                     "disagree_reasons": disagree_reasons,
