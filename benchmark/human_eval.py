@@ -4,6 +4,7 @@ import pandas as pd
 import json
 from urllib.parse import urlparse
 
+
 import sys
 import os
 if os.path.exists('../pipeline_v2/'):
@@ -14,6 +15,9 @@ else:
     raise ValueError("pipeline_v2 directory not found")
 
 import main
+
+import torch
+torch.classes.__path__ = []
 
 def load_data(seed, model, num_samples=50):
     if os.path.exists(f'results_v2_{model}.pkl'):
@@ -54,31 +58,31 @@ def main():
         st.markdown("""
         ## 🚀 Getting Started
         1. 👤 Enter your evaluator ID and select model/seed in the sidebar
-        2. 📊 Use sidebar to track progress and navigate between statements  
+        2. 📊 Use sidebar to track progress and navigate between statements
         3. 💾 Download your evaluations anytime using the 'Download Evaluations' button
-        
+
         ## 📝 For Each Statement
         ### Step 1: Review the Analysis
         - ✅ Check the LLM's verdict
         - 💭 Examine reasoning provided
         - 📑 If needed, expand individual claims below to examine evidence
-        
+
         ### Step 2: Rate Agreement Level
         Choose one:
         - 🌟 **STRONGLY AGREE**: Perfect verdict & reasoning
         - ✅ **AGREE**: Mostly correct analysis
         - ⚠️ **DISAGREE**: Significant issues found
         - ❌ **STRONGLY DISAGREE**: Completely incorrect
-        
+
         ### Step 3: If Disagreeing, Select Why
         - 🔍 **IRRELEVANT/INCORRECT EVIDENCE**: Wrong evidence retrieved
         - 🤔 **INCORRECT ANALYSIS**: Evidence interpreted incorrectly
-        
+
         ## 🧭 Navigation Options
         - ⬅️ / ➡️ Use Previous/Next buttons to move between statements
         - 📑 OR use the sidebar to navigate to a specific statement
         - 💾 Download progress anytime using the button on the sidebar
-                    
+
         ‼️ If you don't see anything below, enter your evaluator ID and select a model/seed on the sidebar and press Enter.
         """)
 
@@ -87,11 +91,11 @@ def main():
     # ----------------------
     st.sidebar.header("Evaluator Information")
     evaluator = st.sidebar.text_input("Evaluator ID")
-    
+
     # Track previous model value
     if "curr_model" not in st.session_state:
         st.session_state.curr_model = None
-    
+
     model = st.sidebar.selectbox("Model", ["gemini", "mistral"])
     seed = st.sidebar.number_input("Seed (for random sampling)", value=42, step=1)
     num_samples = st.sidebar.number_input("Number of samples to evaluate", value=50, step=5)
@@ -119,19 +123,21 @@ def main():
         all_indices = list(range(len(st.session_state.sample_df)))
         done_list = sorted(st.session_state.evaluations.keys())
         remaining_list = [i for i in all_indices if i not in done_list]
-        
+
         # Show completed statements section in a collapsible container
         with st.sidebar.expander("**✓ Completed Evaluations**", expanded=False):
             for idx in done_list:
+                idx = int(idx)
                 st.button(
-                    f"Statement {idx+1} ✓", 
+                    f"Statement {idx+1} ✓",
                     key=f"done_{idx}",
                     on_click=lambda i=idx: setattr(st.session_state, 'current_index', i),
                     type="primary"  # Green/blue styling
-                )                
-        # Show remaining statements section in a collapsible container   
+                )
+        # Show remaining statements section in a collapsible container
         with st.sidebar.expander("**⏳ Remaining Evaluations**", expanded=True):
             for idx in remaining_list:
+                idx = int(idx)
                 st.button(
                     f"Statement {idx+1}",
                     key=f"todo_{idx}",
@@ -147,14 +153,14 @@ def main():
         # Allow user to load previously saved progress
         uploaded_file = st.sidebar.file_uploader("Upload Progress (JSON)", type=["json"])
         if uploaded_file is not None:
-            try:
-                loaded_progress = json.load(uploaded_file)
-                # Merge the uploaded progress into session_state evaluations
-                st.session_state.evaluations.update(loaded_progress)
-                st.sidebar.success("Progress loaded successfully!")
-                st.rerun()
-            except Exception as e:
-                st.sidebar.error("Error loading progress file.")
+            # try:
+            loaded_progress = json.load(uploaded_file)
+            # Merge the uploaded progress into session_state evaluations
+            for key, value in loaded_progress.items():
+                st.session_state.evaluations[int(key)] = value
+            st.sidebar.success("Progress loaded successfully! Click on any statement above for the interface to show your progress. (Current progress is not shown until you click on a statement thanks to a weird bug with Streamlit's `st.rerun()`.)")
+            # except Exception as e:
+            #     st.sidebar.error("Error loading progress file.")
 
     # ----------------------
     # Main Content: Display current evaluation if data loaded
@@ -170,10 +176,10 @@ def main():
             claims = result['claims']
             statement_text = f"On {row['statement_date']}, {row['statement_originator']} claimed: {row['statement']}"
             reasoning = result['reasoning'].replace('\n', ' ')
-            
+
             # Display Statement details (labels uncolored, dynamic content colored)
             st.markdown(f"<h2 style='color: {COLOR_HEADER};'>Statement Evaluation [{idx + 1} of {len(sample_df)}]</h2>", unsafe_allow_html=True)
-            st.markdown(f"<p><strong>Statement:</strong> <span style='color: {COLOR_STATEMENT};'>{statement_text}</span></p>", unsafe_allow_html=True)            
+            st.markdown(f"<p><strong>Statement:</strong> <span style='color: {COLOR_STATEMENT};'>{statement_text}</span></p>", unsafe_allow_html=True)
             st.markdown(f"<p><strong>Overall Verdict:</strong> <span style='color: {COLOR_VERDICT};'>{row['verdict']}</span></p>", unsafe_allow_html=True)
             st.markdown(f"<p><strong>Overall Confidence:</strong> <span style='color: {COLOR_CONFIDENCE};'>{result['confidence']}</span></p>", unsafe_allow_html=True)
             st.markdown(f"<p><strong>Overall Reasoning:</strong> <span style='color: {COLOR_REASONING};'>{reasoning}</span></p>", unsafe_allow_html=True)
@@ -187,7 +193,7 @@ def main():
                     st.markdown(f"<p><strong>Verdict:</strong> <span style='color: {COLOR_VERDICT};'>{claim.verdict}</span></p>", unsafe_allow_html=True)
                     st.markdown(f"<p><strong>Confidence:</strong> <span style='color: {COLOR_CONFIDENCE};'>{claim.confidence}</span></p>", unsafe_allow_html=True)
                     st.markdown(f"<p><strong>Reasoning:</strong> <span style='color: {COLOR_REASONING};'>{claim.reasoning}</span></p>", unsafe_allow_html=True)
-                    
+
                     # For each question-answer pair, show nicely formatted container
                     for component in claim.components:
                         with st.container(border=True):
@@ -197,11 +203,11 @@ def main():
                                 f"<p><strong>Question:</strong> <span style='color: {COLOR_QUESTION};'>{component.question}</span></p>"
                                 f"<p><strong>Answer:</strong> <span style='color: {COLOR_ANSWER};'>{component.answer.text}</span></p>",
                                 unsafe_allow_html=True)
-                            
+
                             if component.answer.citations:
                                 st.markdown(f"<p><strong>Explicit citations by the model:</strong></p>", unsafe_allow_html=True)
                                 for j, citation in enumerate(component.answer.citations, 1):
-                                    if citation: 
+                                    if citation:
                                         site = urlparse(citation.source_url).netloc.lower()
                                         st.markdown(
                                             f"<p style='margin-left:20px;'><span style='color: {COLOR_CITATION};'>"
@@ -229,7 +235,7 @@ def main():
                                   options,
                                   key=f"eval_{idx}",
                                   index=default_index)
-            
+
             # Multiselect reasons (only for disagree choices)
             saved_reasons = saved_eval.get("disagree_reasons", [])
             disagree_reasons = []
@@ -239,7 +245,7 @@ def main():
                                                    "INCORRECT ANALYSIS OF RETRIEVED EVIDENCE"],
                                                   key=f"reasons_{idx}",
                                                   default=saved_reasons)
-                
+
             # Add a text input for additional comments
             comments = st.text_area("Additional Comments (optional):",
                                     key=f"comments_{idx}",
