@@ -16,8 +16,8 @@ else:
 
 import main
 
-import torch
-torch.classes.__path__ = []
+# import torch
+# torch.classes.__path__ = []
 
 def load_data(seed, model, num_samples=50):
     if os.path.exists(f'results_v2_{model}.pkl'):
