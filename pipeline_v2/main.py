@@ -515,7 +515,7 @@ class AnswerSynthesizer(dspy.Module):
             return self.forward(component, documents)
         
         answer = Answer(
-            text=f"{data.get('text', 'No answer provided.\n\n' + f'Reasoning: {result.reasoning}')}",
+            text=data.get('text', 'No answer provided.\n\n') + f'Reasoning: {result.reasoning}',
             retrieved_docs=documents,
             citations=[Citation(
                 snippet=c.get("snippet", ""), 
