@@ -266,7 +266,7 @@ def main():
     # Search configuration
     use_web_search = st.sidebar.checkbox("Enable Web Search", value=True)
     if use_web_search:
-        search_provider = st.sidebar.selectbox("Search Provider", ["duckduckgo", "serper"])
+        search_provider = st.sidebar.selectbox("Search Provider", ["serper", "duckduckgo"])
         if search_provider == "serper":
             # serper_api_key = st.sidebar.text_input("Enter Serper API Key", type="password")
             serper_api_key = os.getenv('SERPER_API_KEY')
