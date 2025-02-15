@@ -307,31 +307,32 @@ def main():
         try:
             # Initialize components
             lm = initialize_lm(model_name, api_key)
-            dspy.settings.configure(lm=lm)
 
-            search_provider_instance = None
-            if use_web_search:
-                search_provider_instance = SearchProvider(
-                    provider=search_provider,
-                    api_key=serper_api_key
+            with dspy.context(lm=lm):
+                dspy.settings.configure(lm=lm)
+                search_provider_instance = None
+                if use_web_search:
+                    search_provider_instance = SearchProvider(
+                        provider=search_provider,
+                        api_key=serper_api_key
+                    )
+
+                # Initialize pipeline with Streamlit-aware components
+                pipeline = StreamlitFactCheckPipeline(
+                    model_name=lm,
+                    embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+                    search_provider=search_provider_instance,
+                    context=[context_doc] if context_doc else None
                 )
 
-            # Initialize pipeline with Streamlit-aware components
-            pipeline = StreamlitFactCheckPipeline(
-                model_name=lm,
-                embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-                search_provider=search_provider_instance,
-                context=[context_doc] if context_doc else None
-            )
-
-            # Format full statement with context
-            full_statement = f"{statement}"
-            
-            # Run pipeline with live updates
-            verdict, confidence, reasoning, claims = pipeline.fact_check(
-                statement=full_statement,
-                web_search=use_web_search
-            )
+                # Format full statement with context
+                full_statement = f"{statement}"
+                
+                # Run pipeline with live updates
+                verdict, confidence, reasoning, claims = pipeline.fact_check(
+                    statement=full_statement,
+                    web_search=use_web_search
+                )
 
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
