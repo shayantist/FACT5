@@ -319,7 +319,7 @@ def main():
                 raise ValueError(f"Unsupported model: {model_name}")
 
             with dspy.context(lm=lm):
-                dspy.settings.configure(lm=lm)
+                # dspy.settings.configure(lm=lm)
                 search_provider_instance = None
                 if use_web_search:
                     search_provider_instance = SearchProvider(
