@@ -8,6 +8,10 @@ import json
 
 import dspy
 
+# Fix for pytorch path class instantiation error
+import torch
+torch.classes.__path__ = []
+
 # Add pipeline directory to path
 sys.path.append('./pipeline_v2/')
 
