@@ -91,6 +91,15 @@ class SearchProvider:
         return filtered_results
 
     def _serper_search(self, query: str, num_results: int) -> List[SearchResult]:
+        """
+        use serper API for the given query and return search results
+        *** params ***
+        query: search query
+        num_results: number of search results to return
+
+        *** returns ***
+        List of SearchResult objects
+        """
         headers = {
             "X-API-KEY": self.api_key,
             "Content-Type": "application/json"
@@ -122,6 +131,15 @@ class SearchProvider:
             return []
         
     def _duckduckgo_search(self, query: str, num_results: int) -> List[SearchResult]:
+        """
+        search DuckDuckGo for the given query and return search results
+        *** params ***
+        query: search query
+        num_results: number of search results to return
+
+        *** returns ***
+        List of SearchResult objects
+        """
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
         }
