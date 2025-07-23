@@ -135,7 +135,7 @@ class SearchProvider:
                     url=result["link"],
                     source=urlparse(result["link"]).netloc.lower(),
                     excerpt=result.get("snippet", ""),
-                    timestamp=pd.to_datetime(result.get("date", datetime.now())).strftime("%Y-%m-%d")
+                    timestamp=pd.to_datetime(result.get("date", datetime.now())).strftime("%Y-%m-%d %H:%M:%S")
                 )
                 for result in results
             ]
@@ -154,7 +154,7 @@ class SearchProvider:
                 url=result["href"], 
                 excerpt=result["body"],
                 source=urlparse(result["href"]).netloc.lower(),
-                timestamp=pd.to_datetime(result.get("date", datetime.now())).strftime("%Y-%m-%d")
+                timestamp=pd.to_datetime(result.get("date", datetime.now())).strftime("%Y-%m-%d %H:%M:%S")
             )
             for result in results
         ]
@@ -168,7 +168,7 @@ class SearchProvider:
                 url=result["url"],
                 source=urlparse(result["url"]).netloc.lower(),
                 excerpt=result.get("content", ""),
-                timestamp=pd.to_datetime(result.get("date", datetime.now())).strftime("%Y-%m-%d")
+                timestamp=pd.to_datetime(result.get("date", datetime.now())).strftime("%Y-%m-%d %H:%M:%S")
             )
             for result in response['results']
         ]
