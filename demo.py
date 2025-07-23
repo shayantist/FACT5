@@ -1,231 +1,39 @@
 import streamlit as st
+import streamlit_nested_layout
+
 from dataclasses import dataclass
 import sys
 import os
-from datetime import datetime
-from urllib.parse import urlparse
-import json
-
+from typing import List
+import time
 import dspy
 
 # Fix for pytorch path class instantiation error
 import torch
 torch.classes.__path__ = []
 
-# Add pipeline directory to path
-sys.path.append('./pipeline_v2/')
-
 import dotenv
-dotenv.load_dotenv()
+dotenv.load_dotenv(override=True)
 
 # Import base classes and utilities
-from main import (
-    Document, Citation, Answer, ClaimComponent, Claim,
-    SearchProvider, VectorStore, ClaimExtractor, QuestionGenerator,
-    AnswerSynthesizer, ClaimEvaluator, OverallStatementEvaluator
+from pipeline_v3.main import (
+    Document, VectorStore, SearchProvider, FactCheckPipeline
 )
 
-class StreamlitFactCheckPipeline:
-    def __init__(
-        self,
-        model_name,
-        embedding_model: str,
-        search_provider=None,
-        context=None,
-        retriever_k: int = 10,
-    ):
-        # Initialize components
-        self.claim_extractor = ClaimExtractor()
-        self.question_generator = QuestionGenerator()
-        self.retriever = VectorStore(
-            model_name=embedding_model,
-            use_bm25=True,
-            bm25_weight=0.5
-        )
-        self.answer_synthesizer = AnswerSynthesizer()
-        self.claim_evaluator = ClaimEvaluator()
-        self.overall_evaluator = OverallStatementEvaluator()
-        
-        self.search_provider = search_provider
-        self.retriever_k = retriever_k
+# Constants for Search Provider
+NUM_SEARCH_RESULTS = 10
+SCRAPE_TIMEOUT = 5
 
-        # Add context documents to vector DB
-        if context:
-            self.retriever.add_documents(
-                [doc.content for doc in context],
-                [doc.metadata for doc in context]
-            )
+# Constants for Retrieval (Vector DB + BM25)
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+USE_BM25 = True
+BM25_WEIGHT = 0.5
 
-        # Create Streamlit placeholders for live updates
-        self.status_placeholder = st.empty()
-        self.progress_bar = st.progress(0)
-        self.results_container = st.container()
-
-    def update_status(self, message, progress=None):
-        """Update status message and progress bar"""
-        self.status_placeholder.markdown(f"**Status:** {message}")
-        if progress is not None:
-            self.progress_bar.progress(progress)
-
-    def fact_check(self, statement: str, web_search: bool = True):
-        # Clear previous results
-        self.results_container = st.container()
-        
-        # Reset containers
-        with self.results_container:
-            st.markdown("### Pipeline Progress")
-            
-            # Step 1: Extract Claims
-            claims_container = st.expander("Step 1: Claim Extraction", expanded=True)
-            with claims_container:
-                self.update_status("Extracting claims...", 0.1)
-                st.markdown("Analyzing statement to extract verifiable claims...")
-                claims = self.claim_extractor(statement)
-                
-                st.markdown(f"**Extracted {len(claims)} claims:**")
-                for i, claim in enumerate(claims, 1):
-                    st.markdown(f"<p><strong>Claim {i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
-                    # st.markdown(f"""
-                    # <p style='margin-left:20px; color: {COLORS['CLAIM']};'>
-                    # {i}. {claim.text}
-                    # </p>
-                    # """, unsafe_allow_html=True)
-
-            # Step 2: Generate Questions
-            questions_container = st.expander("Step 2: Question Generation", expanded=True)
-            with questions_container:
-                self.update_status("Generating questions...", 0.2)
-                
-                for i, claim in enumerate(claims, 1):
-                    st.markdown(f"<p><strong>Claim {i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
-                    components = self.question_generator(statement, claim)
-                    claim.components = components
-                    
-                    for j, component in enumerate(components, 1):
-
-                        st.markdown(f"<p><strong>Question {j}:</strong> <span style='color: {COLORS['QUESTION']};'>{component.question}</span></p>", unsafe_allow_html=True)
-                        st.markdown(f"<p><strong>Search Queries:</strong> <span style='color: {COLORS['STATEMENT']};'>{component.search_queries}</span></p>", unsafe_allow_html=True)
-
-                        # st.markdown(f"""
-                        # <p style='margin-left:20px;'>
-                        # <span style='color: {COLORS['QUESTION']};'>Q{j}: {component.question}</span><br>
-                        # <span style='color: {COLORS['REASONING']};'>Search Queries: {component.search_queries}</span>
-                        # </p>
-                        # """, unsafe_allow_html=True)
-
-            # Step 3: Search and Retrieve Evidence
-            evidence_container = st.expander("Step 3: Evidence Collection", expanded=True)
-            with evidence_container:
-                self.update_status("Collecting evidence...", 0.4)
-                
-                for claim in claims:
-                    st.markdown(f"<p><strong>Processing Claim:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
-                    
-                    for component in claim.components:
-                        st.markdown(f"<p><strong>Question:</strong> <span style='color: {COLORS['QUESTION']};'>{component.question}</span></p>", unsafe_allow_html=True)
-                        
-                        relevant_docs = []
-                        for query in component.search_queries:
-                            if web_search and self.search_provider:
-                                st.markdown(f"Searching web for: `{query}`")
-                                search_results = self.search_provider.search(query)
-                                
-                                # Add search results to vector store
-                                documents, metadata = [], []
-                                for result in search_results:
-                                    if result.excerpt:
-                                        documents.append(result.excerpt)
-                                        metadata.append({
-                                            "title": result.title,
-                                            "url": result.url,
-                                            "source": result.source
-                                        })
-                                        st.markdown(f"""
-                                        <p style='margin-left:20px; color: {COLORS['CITATION']};'>
-                                        • <a href='{result.url}'>{result.title}</a>
-                                        </p>
-                                        """, unsafe_allow_html=True)
-                                
-                                self.retriever.add_documents(documents, metadata)
-                            
-                            # Retrieve relevant documents
-                            docs = self.retriever.retrieve(query, k=self.retriever_k)
-                            relevant_docs.extend(docs)
-                            
-                        # Synthesize answer
-                        st.markdown("*Synthesizing answer...*")
-                        answer = self.answer_synthesizer(component, relevant_docs)
-                        component.answer = answer
-                        
-                        st.markdown(f"""
-                        <p style='margin-left:20px;'>
-                        <span style='color: {COLORS['ANSWER']};'>{answer.text}</span>
-                        </p>
-                        """, unsafe_allow_html=True)
-                        
-                        if answer.citations:
-                            st.markdown("*Citations:*")
-                            for i, citation in enumerate(answer.citations, 1):
-                                if citation:
-                                    st.markdown(f"""
-                                    <p style='margin-left:40px; color: {COLORS['CITATION']};'>
-                                    [{i}] {citation.snippet}<br>
-                                    — <a href='{citation.source_url}'>{citation.source_title}</a>
-                                    </p>
-                                    """, unsafe_allow_html=True)
-
-            # Step 4: Evaluate Claims
-            evaluation_container = st.expander("Step 4: Claim Evaluation", expanded=True)
-            with evaluation_container:
-                self.update_status("Evaluating claims...", 0.8)
-                
-                for i, claim in enumerate(claims, 1):
-                    st.markdown(f"<p><strong>Evaluating Claim {i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
-                    verdict, confidence, reasoning = self.claim_evaluator(claim)
-                    claim.verdict = verdict
-                    claim.confidence = confidence
-                    claim.reasoning = reasoning
-                    
-                    st.markdown(f"<p><strong>Verdict:</strong> <span style='color: {COLORS['VERDICT']};'>{verdict}</span></p>", unsafe_allow_html=True)
-                    st.markdown(f"<p><strong>Confidence:</strong> <span style='color: {COLORS['CONFIDENCE']};'>{confidence}</span></p>", unsafe_allow_html=True)
-                    st.markdown(f"<p><strong>Reasoning:</strong> <span style='color: {COLORS['REASONING']};'>{reasoning}</span></p>", unsafe_allow_html=True) 
-
-                    # st.markdown(f"""
-                    # <p style='margin-left:20px;'>
-                    # <span style='color: {COLORS['VERDICT']};'>Verdict: {verdict}</span><br>
-                    # <span style='color: {COLORS['CONFIDENCE']};'>Confidence: {confidence}</span><br>
-                    # <span style='color: {COLORS['REASONING']};'>Reasoning: {reasoning}</span>
-                    # </p>
-                    # """, unsafe_allow_html=True)
-
-            # Step 5: Overall Evaluation
-            final_container = st.expander("Step 5: Final Verdict", expanded=True)
-            with final_container:
-                self.update_status("Determining final verdict...", 0.9)
-                
-                verdict, confidence, reasoning = self.overall_evaluator(statement, claims)
-
-                st.markdown(f"<h2 style='color: {COLORS['HEADER']};'>Statement Evaluation</h2>", unsafe_allow_html=True)
-                st.markdown(f"<p><strong>Statement:</strong> <span style='color: {COLORS['STATEMENT']};'>{statement}</span></p>", unsafe_allow_html=True)
-                st.markdown(f"<p><strong>Overall Verdict:</strong> <span style='color: {COLORS['VERDICT']};'>{verdict}</span></p>", unsafe_allow_html=True)
-                st.markdown(f"<p><strong>Overall Confidence:</strong> <span style='color: {COLORS['CONFIDENCE']};'>{confidence}</span></p>", unsafe_allow_html=True)
-                st.markdown(f"<p><strong>Overall Reasoning:</strong> <span style='color: {COLORS['REASONING']};'>{reasoning}</span></p>", unsafe_allow_html=True)
-
-                # st.markdown(f"""
-                # <h3>Final Verdict</h3>
-                # <p style='color: {COLORS['VERDICT']};'>Verdict: {verdict}</p>
-                # <p style='color: {COLORS['CONFIDENCE']};'>Confidence: {confidence}</p>
-                # <p style='color: {COLORS['REASONING']};'>Reasoning: {reasoning}</p>
-                # """, unsafe_allow_html=True)
-
-            self.update_status("Fact-check complete!", 1.0)
-            return verdict, confidence, reasoning, claims
-
-# Colors for UI
+# Colors for UI (restored from original)
 COLORS = {
-    'HEADER': "#1f77b4",        # For top-level headers (e.g., "Statement Evaluation")
+    'HEADER': "#1f77b4",        # For top-level headers
     'STATEMENT': "#ff7f0e",     # For statement content
-    'VERDICT': "#2ca02c",       # For verdict values (both statement and claims)
+    'VERDICT': "#2ca02c",       # For verdict values
     'CONFIDENCE': "#d62728",    # For confidence numbers
     'REASONING': "#9467bd",     # For reasoning text
     'QUESTION': "#9467bd",      # For questions in claim components
@@ -234,122 +42,485 @@ COLORS = {
     'CLAIM': "#1f77b4"          # For claim text
 }
 
-def main():
-    st.set_page_config(page_title="LLM Fact-Checker Demo", layout="wide")
-    
-    # Title and description
-    st.title("🔍 LLM Fact-Checker Demo")
-    st.markdown("""
-    Enter a statement to fact-check and configure the pipeline settings below.
-    The system will break down the statement, search for evidence, and provide a detailed analysis.
-    """)
-
-    # Sidebar configuration
-    st.sidebar.header("Pipeline Configuration")
-    
-    # Model selection or allow user to enter their own model
-    model_name = st.sidebar.selectbox(
-        "Select Language Model",
-        [
-            "gemini/gemini-1.5-flash",
-            "openai/gpt-4o-mini",
-            "anthropic/claude-3-5-sonnet",
-            "openrouter/meta-llama/llama-3.3-70b-instruct:free",
-            "CUSTOM"
-        ]
-    )
-    st.write(f"NOTE: For now, only gemini-1.5-flash is offered free of charge without an API key. If you want to use other models, feel free to bring your own key (BYOK...?)!")
-    if model_name == "CUSTOM":
-        model_name = st.sidebar.text_input("Enter Custom Model in LiteLLM format \n(e.g. openai/gpt-4o, openrouter/qwen/qwen-2.5-7b-instruct)", value="")
-
-    # API key input based on model
-    api_key = None
-    if model_name == 'gemini/gemini-1.5-flash':
-        # api_key = st.sidebar.text_input("Enter Google API Key", type="password")
-        api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
-    elif model_name.startswith('openrouter/'):
-        api_key = st.sidebar.text_input("Enter OpenRouter API Key", type="password")
-    elif model_name.startswith('anthropic/'):
-        api_key = st.sidebar.text_input("Enter Anthropic API Key", type="password")
-    elif model_name.startswith('openai/'):
-        api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
-
-    # Search configuration
-    use_web_search = st.sidebar.checkbox("Enable Web Search", value=True)
-    if use_web_search:
-        search_provider = st.sidebar.selectbox("Search Provider", ["serper", "duckduckgo"])
-        if search_provider == "serper":
-            # serper_api_key = st.sidebar.text_input("Enter Serper API Key", type="password")
-            serper_api_key = os.getenv('SERPER_API_KEY')
+class StreamlitFactCheckPipeline(FactCheckPipeline):
+    """Enhanced FactCheckPipeline with improved Streamlit UI components"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Create UI state containers
+        self.status_container = st.empty()
+        self.progress_bar = st.progress(0)
+        self.results_container = st.empty()
+        
+        # Disable verbose console output
+        global VERBOSE
+        VERBOSE = False
+        
+    def update_status(self, message: str, progress: float = None):
+        """Update status message and progress bar"""
+        if progress < 1:
+            self.status_container.info(f"**Status:** 🔄 {message}")
         else:
-            serper_api_key = None
+            self.status_container.success(f"**Status:** 🔄 {message}")
+        if progress is not None:
+            self.progress_bar.progress(progress)
+        time.sleep(0.01)  # Allow UI to update
+    
+    def fact_check(self, statement: str, web_search: bool = True):
+        """Enhanced fact-check with linear layout and original colors"""
+        
+        # Reset containers
+        self.results_container.empty()
+        time.sleep(0.01)
 
-    # Context document input
-    use_context = st.sidebar.checkbox("Include Specific Context to Ground Fact-Check", value=False)
-    context_doc = None
-    if use_context:
-        context_text = st.sidebar.text_area("Enter Contextual Information (Text)")
-        if context_text:
-            context_doc = Document(
-                content=context_text,
-                metadata={"title": "User Provided Context", "url": ""}
-            )
+        with self.results_container.container():
+            st.markdown("### Pipeline Progress")
+            
+            # Step 1: Extract Claims
+            claims_container = st.expander("Step 1: Claim Extraction", expanded=True)
+            with claims_container:
+                self.update_status("Extracting claims...", 0.1)
+                st.info("🔬 Analyzing statement to extract verifiable claims...")
+                
+                try:
+                    claims = self.claim_extractor(statement)
+                    
+                    st.markdown(f"**Extracted {len(claims)} claims:**")
+                    for i, claim in enumerate(claims, 1):
+                        st.markdown(f"<p style='margin-left: 20px;'><strong>Claim {i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
+                        
+                except Exception as e:
+                    st.error(f"Failed to extract claims: {str(e)}")
+                    return None, None, None, None
+            
+            # Step 2: Process each claim
+            for claim_i, claim in enumerate(claims, 1):
+                # Generate questions for the claim
+                questions_container = st.expander(f"Step 2.{claim_i}: Question Generation for Claim {claim_i}", expanded=True)
+                with questions_container:
+                    self.update_status(f"Generating questions for claim {claim_i}/{len(claims)}...", 0.2 + (0.1 * (claim_i / len(claims))))
+                    
+                    st.markdown(f"<p><strong>Claim {claim_i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
+                    
+                    try:
+                        components = self.question_generator(statement, claim)
+                        
+                        for j, component in enumerate(components, 1):
+                            st.markdown(f"<p style='margin-left: 20px;'><strong>Question {j}:</strong> <span style='color: {COLORS['QUESTION']};'>{component.question}</span></p>", unsafe_allow_html=True)
+                            st.markdown(f"<p style='margin-left: 20px;'><strong>Search Queries:</strong> <span style='color: {COLORS['STATEMENT']};'>{component.search_queries}</span></p>", unsafe_allow_html=True)
+                            
+                    except Exception as e:
+                        st.error(f"Failed to generate questions: {str(e)}")
+                        continue
 
+                # Process each component (question)
+                for component_i, component in enumerate(components, 1):
+                    evidence_container = st.expander(f"Step 3.{component_i}: Evidence Collection for Question {component_i}", expanded=True)
+                    with evidence_container:
+                        progress_val = 0.3 + (0.3 * ((claim_i-1)/len(claims) + (component_i-1)/len(components)/len(claims)))
+                        self.update_status(f"Collecting evidence for claim {claim_i}, question {component_i}...", progress_val)
+                        
+                        st.markdown(f"<p><strong>Question:</strong> <span style='color: {COLORS['QUESTION']};'>{component.question}</span></p>", unsafe_allow_html=True)
+                        
+                        # Search and retrieve documents
+                        relevant_docs = []
+                        for query_i, query in enumerate(component.search_queries, 1):                                        
+                            # If web search is enabled, perform web search
+                            if web_search and self.search_provider:
+                                st.markdown(f"Searching query {query_i} on the web: `{query}`")
+                                try:
+                                    search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
+                                    
+                                    # Display search results in data table
+                                    st.markdown(f"Retrieved {len(search_results)} sources from the web:")
+                                    st.dataframe(search_results, use_container_width=True)
+                                    
+                                    # Add search results to vector store
+                                    documents, metadata = [], []
+                                    for result in search_results:
+                                        if result.excerpt:
+                                            documents.append(result.excerpt)
+                                            metadata.append({
+                                                "title": result.title,
+                                                "url": result.url,
+                                                "source": result.source
+                                            })
+                                    
+                                    if documents:
+                                        self.vector_store.add_documents(documents, metadata)
+                                        
+                                except Exception as e:
+                                    st.warning(f"Search failed for query: {query}")
+                            
+                            # Get relevant documents from vector store
+                            docs = self.vector_store.retrieve(query, k=self.num_retrieved_docs)
+                            relevant_docs.extend(docs)
+                        
+                        # Synthesize answer
+                        st.markdown("*Synthesizing answer...*")
+                        try:
+                            answer, has_sufficient_info = self.answer_synthesizer(component, documents=relevant_docs)
+                            
+                            st.markdown(f"""
+                            <p style='margin-left:20px;'>
+                            <span style='color: {COLORS['ANSWER']};'>{answer.text}</span>
+                            </p>
+                            """, unsafe_allow_html=True)
+                            
+                            # Display citations
+                            if answer.citations:
+                                for i, citation in enumerate(answer.citations, 1):
+                                    if citation:
+                                        st.markdown(f"""
+                                        <p style='margin-left:40px; color: {COLORS['CITATION']};'>
+                                        [{i}] {citation.snippet}<br>
+                                        — <a href='{citation.source_url}'>{citation.source_title}</a>
+                                        </p>
+                                        """, unsafe_allow_html=True)
+                            
+                            component.answer = answer
+                            
+                        except Exception as e:
+                            st.error(f"Failed to synthesize answer: {str(e)}")
+                            continue
+                
+                # Set claim components (questions and answers)
+                claim.components = components
+                
+                # Step 4: Evaluate claim
+                evaluation_container = st.expander(f"Step 4: Evaluating Claim {claim_i}", expanded=True)
+                with evaluation_container:
+                    progress_val = 0.6 + (0.2 * (claim_i / len(claims)))
+                    self.update_status(f"Evaluating claim {claim_i}/{len(claims)}...", progress_val)
+                    
+                    try:
+                        verdict, confidence, reasoning = self.claim_evaluator(claim)
+                        
+                        st.markdown(f"<p><strong>Claim:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
+                        st.markdown(f"<p><strong>Verdict:</strong> <span style='color: {COLORS['VERDICT']};'>{verdict}</span> <span style='color: {COLORS['CONFIDENCE']};'>({confidence*100:.2f}% confidence)</span></p>", unsafe_allow_html=True)
+                        st.markdown(f"<p><strong>Reasoning:</strong> <span style='color: {COLORS['REASONING']};'>{reasoning}</span></p>", unsafe_allow_html=True)
+                        
+                        # Display question-answer pairs used for evaluation
+                        st.markdown("**Evidence used for evaluation:**")
+                        for j, component in enumerate(claim.components, 1):
+                            st.markdown(f"""
+                            <p style='margin-left:20px;'>
+                            <strong>Question {j}:</strong> <span style='color: {COLORS['QUESTION']};'>{component.question}</span><br>
+                            <strong>Answer:</strong> <span style='color: {COLORS['ANSWER']};'>{component.answer.text}</span>
+                            </p>
+                            """, unsafe_allow_html=True)
+                        
+                        claim.verdict, claim.confidence, claim.reasoning = verdict, confidence, reasoning
+                        
+                    except Exception as e:
+                        st.error(f"Failed to evaluate claim: {str(e)}")
+                        continue
+            
+            # Step 5: Overall Evaluation
+            final_container = st.expander("Step 5: Final Verdict", expanded=True)
+            with final_container:
+                self.update_status("Determining final verdict...", 0.9)
+                
+                try:
+                    # If multiple claims, evaluate overall statement
+                    if len(claims) > 1:
+                        overall_verdict, overall_confidence, overall_reasoning = self.overall_statement_evaluator(statement, claims)
+                    else:
+                        overall_verdict = claims[0].verdict
+                        overall_confidence = claims[0].confidence
+                        overall_reasoning = claims[0].reasoning
+                    
+                    st.markdown(f"<h2 style='color: {COLORS['HEADER']};'>Statement Evaluation</h2>", unsafe_allow_html=True)
+                    st.markdown(f"<p><strong>Statement:</strong> <span style='color: {COLORS['STATEMENT']};'>{statement}</span></p>", unsafe_allow_html=True)
+                    st.markdown(f"<p><strong>Overall Verdict:</strong> <span style='color: {COLORS['VERDICT']};'>{overall_verdict}</span> <span style='color: {COLORS['CONFIDENCE']};'>({overall_confidence*100:.2f}% confidence)</span></p>", unsafe_allow_html=True)
+                    st.markdown(f"<p><strong>Overall Reasoning:</strong> <span style='color: {COLORS['REASONING']};'>{overall_reasoning}</span></p>", unsafe_allow_html=True)
+                    
+                    # Display breakdown of claims
+                    st.markdown("### Breakdown of Claims")
+                    for i, claim in enumerate(claims, 1):
+                        st.markdown(f"""
+                        <p>
+                        <strong>Claim {i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span><br>
+                        <strong>Verdict:</strong> <span style='color: {COLORS['VERDICT']};'>{claim.verdict}</span> 
+                        <span style='color: {COLORS['CONFIDENCE']};'>({claim.confidence*100:.2f}% confidence)</span>
+                        </p>
+                        """, unsafe_allow_html=True)
+                    
+                    self.update_status("Fact-check complete!", 1.0)
+                    return overall_verdict, overall_confidence, overall_reasoning, claims
+                    
+                except Exception as e:
+                    st.error(f"Failed to generate final verdict: {str(e)}")
+                    return None, None, None, None
+
+def create_sidebar():
+    """Create enhanced sidebar configuration"""
+    st.sidebar.header("🔧 Pipeline Configuration")
+    
+    # Model selection with better descriptions
+    st.sidebar.subheader("🤖 Language Model")
+    model_options = {
+        "gemini/gemini-2.0-flash": "gemini/gemini-2.0-flash (free)",
+        "openai/gpt-4o-mini": "openai/gpt-4o-mini",
+        "anthropic/claude-3-7-sonnet": "anthropic/claude-3-7-sonnet",
+        "openrouter/meta-llama/llama-3.3-70b-instruct:free": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+        "CUSTOM": "Custom Model"
+    }
+    
+    model_name = st.sidebar.selectbox("Select Model", list(model_options.keys()), 
+                                     format_func=lambda x: model_options[x])
+    
+    if model_name == "CUSTOM":
+        model_name = st.sidebar.text_input("Custom Model (LiteLLM format)", 
+                                          placeholder="e.g., openai/gpt-4o")
+    
+    # API key handling
+    api_key = None
+    if model_name == 'gemini/gemini-2.0-flash':
+        api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
+        if not api_key:
+            st.sidebar.info("ℹ️ Using default Gemini API key")
+    elif model_name.startswith('openrouter/'):
+        api_key = st.sidebar.text_input("🔑 OpenRouter API Key", type="password")
+    elif model_name.startswith('anthropic/'):
+        api_key = st.sidebar.text_input("🔑 Anthropic API Key", type="password")
+    elif model_name.startswith('openai/'):
+        api_key = st.sidebar.text_input("🔑 OpenAI API Key", type="password")
+    
+    st.sidebar.markdown("---")
+    
+    # Search configuration
+    st.sidebar.subheader("🌐 Web Search")
+    use_web_search = st.sidebar.checkbox("Enable Web Search", value=True)
+    search_provider = None
+    search_api_key = None
+    
+    if use_web_search:
+        search_options = {
+            "tavily": "Tavily AI Search",
+            "serper": "Google (via Serper)",
+            "duckduckgo": "DuckDuckGo (Free)",
+        }
+        search_provider = st.sidebar.selectbox("Search Provider", list(search_options.keys()),
+                                              format_func=lambda x: search_options[x])
+        
+        if search_provider == "serper":
+            search_api_key = os.getenv('SERPER_API_KEY')
+            if not search_api_key:
+                search_api_key = st.sidebar.text_input("🔑 Serper API Key", type="password")
+        elif search_provider == "tavily":
+            search_api_key = os.getenv('TAVILY_API_KEY')
+            if not search_api_key:
+                search_api_key = st.sidebar.text_input("🔑 Tavily API Key", type="password")
+    
+    st.sidebar.markdown("---")
+    
+    # Advanced options
+    with st.sidebar.expander("⚙️ Advanced Options"):
+        self_correct_answer = st.checkbox("Self-correct Answers", value=False,
+                                        help="Regenerate search if insufficient information")
+        self_correct_claim = st.checkbox("Self-correct Claims", value=False,
+                                       help="Regenerate questions if claim unverifiable")
+        
+        max_retries = 1
+        if self_correct_answer or self_correct_claim:
+            max_retries = st.slider("Max Retries", 1, 5, 3)
+        
+        retriever_k = st.slider("Documents per Query", 3, 20, 10,
+                               help="Number of documents to retrieve per search query")
+        
+        # Context documents
+        use_context = st.checkbox("Add Context Documents", value=False)
+        context_doc = None
+        if use_context:
+            context_text = st.text_area("Context Information",
+                                       placeholder="Enter relevant background information...")
+            if context_text:
+                context_doc = Document(
+                    content=context_text,
+                    metadata={"title": "User Context", "url": ""}
+                )
+    
+    return {
+        "model_name": model_name,
+        "api_key": api_key,
+        "use_web_search": use_web_search,
+        "search_provider": search_provider,
+        "search_api_key": search_api_key,
+        "self_correct_answer": self_correct_answer,
+        "self_correct_claim": self_correct_claim,
+        "max_retries": max_retries,
+        "retriever_k": retriever_k,
+        "context_doc": context_doc
+    }
+
+def main():
+    st.set_page_config(
+        page_title="FACT5: LLM Fact-Checking Pipeline",
+        page_icon="🔍",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Header
+    st.title("🔍 FACT5: LLM Fact-Checking Pipeline")
+    st.info("💡 **Demo for ACL 2025** by Shayan Chowdhury, Sunny Fang, & Smaranda Muresan")
+    
+    # App description
+    st.markdown("""
+    As part of the **FACT5** paper, this demo automatically fact-checks statements by: (1) Breaking statements into atomic claims,
+      (2) Generating targeted research questions,
+      (3) Searching for evidence online,
+      (4) Synthesizing answers with citations,
+      (5) Evaluating truthfulness (into 5 categories + unverifiable) with confidence scores,
+      (6) Providing transparent reasoning. 
+    """)
+    st.markdown("""Try out the pipeline on any of the following examples or enter your own statement to fact-check.""")
+    
+    
+    # Get configuration from sidebar
+    config = create_sidebar()
+    
     # Main input area
-    with st.container():
-        statement = st.text_area("Enter statement to fact-check", height=100, placeholder="2+2=4")
-        # statement_date = st.date_input("Statement Date")
-        # statement_originator = st.text_input("Statement Originator (e.g., source, speaker)")
-        submitted = st.button("Fact Check")
+    st.markdown("### 📝 Enter Statement to Fact-Check")
+    
+    # Initialize session state for statement if not exists
+    if 'statement_text' not in st.session_state:
+        st.session_state.statement_text = ""
+    
+    # Example statements
+    st.markdown("**Quick Examples:**")
+    
+    # Simple examples (single claims)
+    # st.markdown("*Simple statements:*")
+    example_col1, example_col2, example_col3, example_col4 = st.columns(4)
+    
+    simple_examples = [
+        "The Earth is flat",
+        "COVID-19 vaccines contain microchips", 
+        "Climate change is a hoax and the earth is not getting hotter because winters are still cold",
+        "Immigrants are invading our country and replacing our cultural and ethnic background"
+    ]
+    
+    with example_col1:
+        if st.button("🌍 Earth is flat", help=simple_examples[0]):
+            st.session_state.statement_text = simple_examples[0]
+    
+    with example_col2:
+        if st.button("💉 Vaccine microchips", help=simple_examples[1]):
+            st.session_state.statement_text = simple_examples[1]
+    
+    with example_col3:
+        if st.button("🌡️ Climate hoax", help=simple_examples[2]):
+            st.session_state.statement_text = simple_examples[2]
 
-    if statement or submitted:
+    with example_col4:
+        if st.button("👥 Immigrants invading", help=simple_examples[3]):
+            st.session_state.statement_text = simple_examples[3]
+    
+    # Complex examples (multiple claims)
+    # st.markdown("*Complex statements (multiple claims):*")
+    complex_col1, complex_col2, complex_col3, complex_col4 = st.columns(4)
+    
+    complex_examples = [
+        "Joe Biden won the 2020 presidential election by over 7 million votes, becoming the 46th president at age 78, and was previously Obama's vice president for 8 years.",
+        "A significant significant portion of the internet's content is generated by AI or bots. The date given for this death is generally around 2020.",
+        "The Great Wall of China is over 13,000 miles long, took more than 2,000 years to build, is visible from space with the naked eye, and required millions of workers.",
+        "Tesla was founded by Elon Musk in 2003, became the world's most valuable automaker in 2020, and has sold over 1 million electric vehicles annually since 2021."
+    ]
+    
+    with complex_col1:
+        if st.button("🗳️ 2020 Election Details", help=complex_examples[0]):
+            st.session_state.statement_text = complex_examples[0]
+    with complex_col2:
+        if st.button("🤖 Dead Internet", help=complex_examples[1]):
+            st.session_state.statement_text = complex_examples[1]
+    with complex_col3:
+        if st.button("🏛️ Great Wall Facts", help=complex_examples[2]):
+            st.session_state.statement_text = complex_examples[1]
+    with complex_col4:
+        if st.button("🚗 Tesla History", help=complex_examples[3]):
+            st.session_state.statement_text = complex_examples[3]
+    
+    # Main text input
+    statement = st.text_area(
+        "Statement to fact-check:",
+        value=st.session_state.statement_text,
+        height=120,
+        placeholder="Enter a statement to fact-check (e.g., 'The Earth is flat and was proven by NASA in 2023')",
+        key="statement_input"
+    )
+    
+    # Update session state when text area changes
+    if statement != st.session_state.statement_text:
+        st.session_state.statement_text = statement
+    
+    # Submit button
+    submitted = st.button("🚀 Start Fact-Check", type="primary", use_container_width=True)
+    
+    # Validation and execution
+    if submitted or statement:
         if not statement:
-            st.error("Please enter a statement to fact-check.")
+            st.error("⚠️ Please enter a statement to fact-check.")
             return
         
-        if model_name and not api_key:
-            st.error("Please enter an API key for the selected model.")
+        if not config["model_name"]:
+            st.error("⚠️ Please select a language model.")
             return
-
-        if use_web_search and search_provider == "serper" and not serper_api_key:
-            st.error("Please enter a Serper API key for web search.")
+        
+        if config["model_name"] != 'gemini/gemini-2.0-flash' and not config["api_key"]:
+            st.error("⚠️ Please enter an API key for the selected model.")
             return
-
+        
+        if config["use_web_search"] and config["search_provider"] == "serper" and not config["search_api_key"]:
+            st.error("⚠️ Please enter a Serper API key for web search.")
+            return
+        
+        # Initialize and run pipeline
         try:
-            # Initialize components
-            if model_name:
-                lm = dspy.LM(model_name, api_key=api_key)
-            else:
-                raise ValueError(f"Unsupported model: {model_name}")
-
+            # Initialize language model
+            lm = dspy.LM(config["model_name"], api_key=config["api_key"], 
+                        max_tokens=4096, temperature=0.0)
+            
             with dspy.context(lm=lm):
-                # dspy.settings.configure(lm=lm)
+                # Initialize search provider
                 search_provider_instance = None
-                if use_web_search:
+                if config["use_web_search"]:
                     search_provider_instance = SearchProvider(
-                        provider=search_provider,
-                        api_key=serper_api_key
+                        provider=config["search_provider"],
+                        api_key=config["search_api_key"]
                     )
-
-                # Initialize pipeline with Streamlit-aware components
-                pipeline = StreamlitFactCheckPipeline(
-                    model_name=lm,
-                    embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-                    search_provider=search_provider_instance,
-                    context=[context_doc] if context_doc else None
-                )
-
-                # Format full statement with context
-                full_statement = f"{statement}"
                 
-                # Run pipeline with live updates
-                verdict, confidence, reasoning, claims = pipeline.fact_check(
-                    statement=full_statement,
-                    web_search=use_web_search
+                # Initialize pipeline
+                pipeline = StreamlitFactCheckPipeline(
+                    model=lm,
+                    vector_store=VectorStore(
+                        model_name=EMBEDDING_MODEL,
+                        use_bm25=USE_BM25,
+                        bm25_weight=BM25_WEIGHT
+                    ),
+                    search_provider=search_provider_instance,
+                    num_retrieved_docs=config["retriever_k"],
+                    context=[config["context_doc"]] if config["context_doc"] else None,
+                    self_correct_per_answer=config["self_correct_answer"],
+                    self_correct_per_claim=config["self_correct_claim"],
+                    num_retries_per_answer=config["max_retries"],
+                    num_retries_per_claim=config["max_retries"]
                 )
-
+                
+                # Run fact-check
+                result = pipeline.fact_check(statement, web_search=config["use_web_search"])
+                
+                if result[0] is not None:
+                    st.success("✅ Fact-check completed successfully!")
+                else:
+                    st.error("❌ Fact-check failed. Please try again.")
+        
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
+            st.error(f"❌ An error occurred: {str(e)}")
+            with st.expander("🐛 Error Details"):
+                import traceback
+                st.code(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
