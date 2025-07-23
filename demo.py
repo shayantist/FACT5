@@ -15,8 +15,11 @@ torch.classes.__path__ = []
 import dotenv
 dotenv.load_dotenv(override=True)
 
+# Add pipeline directory to path
+sys.path.append('./pipeline_v3/')
+
 # Import base classes and utilities
-from pipeline_v3.main import (
+from main import (
     Document, VectorStore, SearchProvider, FactCheckPipeline
 )
 
