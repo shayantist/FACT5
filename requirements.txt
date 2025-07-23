@@ -221,3 +221,4 @@ xxhash==3.5.0
 yarl==1.18.3
 ydata-profiling==4.12.2
 zipp==3.21.0
+streamlit-nested-layout==0.1.4
