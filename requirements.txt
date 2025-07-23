@@ -222,3 +222,4 @@ yarl==1.18.3
 ydata-profiling==4.12.2
 zipp==3.21.0
 streamlit-nested-layout==0.1.4
+tavily-python==0.7.10
