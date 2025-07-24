@@ -20,6 +20,8 @@ from pipeline_v3.main import (
     Document, VectorStore, SearchProvider, FactCheckPipeline
 )
 
+from pipeline_v3.utils import retry_function
+
 # Constants for Search Provider
 NUM_SEARCH_RESULTS = 10
 SCRAPE_TIMEOUT = 5
@@ -83,7 +85,7 @@ class StreamlitFactCheckPipeline(FactCheckPipeline):
                 st.info("🔬 Analyzing statement to extract verifiable claims...")
                 
                 try:
-                    claims = self.claim_extractor(statement)
+                    claims = retry_function(self.claim_extractor, statement)
                     
                     st.markdown(f"**Extracted {len(claims)} claims:**")
                     for i, claim in enumerate(claims, 1):
@@ -103,7 +105,7 @@ class StreamlitFactCheckPipeline(FactCheckPipeline):
                     st.markdown(f"<p><strong>Claim {claim_i}:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
                     
                     try:
-                        components = self.question_generator(statement, claim)
+                        components = retry_function(self.question_generator, statement, claim)
                         
                         for j, component in enumerate(components, 1):
                             st.markdown(f"<p style='margin-left: 20px;'><strong>Question {j}:</strong> <span style='color: {COLORS['QUESTION']};'>{component.question}</span></p>", unsafe_allow_html=True)
@@ -129,7 +131,7 @@ class StreamlitFactCheckPipeline(FactCheckPipeline):
                             if web_search and self.search_provider:
                                 st.markdown(f"Searching query {query_i} on the web: `{query}`")
                                 try:
-                                    search_results = self.search_provider.search(query, NUM_SEARCH_RESULTS)
+                                    search_results = retry_function(self.search_provider.search, query, NUM_SEARCH_RESULTS)
                                     
                                     # Display search results in data table
                                     st.markdown(f"Retrieved {len(search_results)} sources from the web:")
@@ -159,7 +161,7 @@ class StreamlitFactCheckPipeline(FactCheckPipeline):
                         # Synthesize answer
                         st.markdown("*Synthesizing answer...*")
                         try:
-                            answer, has_sufficient_info = self.answer_synthesizer(component, documents=relevant_docs)
+                            answer, has_sufficient_info = retry_function(self.answer_synthesizer, component, documents=relevant_docs)
                             
                             st.markdown(f"""
                             <p style='margin-left:20px;'>
@@ -194,7 +196,7 @@ class StreamlitFactCheckPipeline(FactCheckPipeline):
                     self.update_status(f"Evaluating claim {claim_i}/{len(claims)}...", progress_val)
                     
                     try:
-                        verdict, confidence, reasoning = self.claim_evaluator(claim)
+                        verdict, confidence, reasoning = retry_function(self.claim_evaluator, claim)
                         
                         st.markdown(f"<p><strong>Claim:</strong> <span style='color: {COLORS['CLAIM']};'>{claim.text}</span></p>", unsafe_allow_html=True)
                         st.markdown(f"<p><strong>Verdict:</strong> <span style='color: {COLORS['VERDICT']};'>{verdict}</span> <span style='color: {COLORS['CONFIDENCE']};'>({confidence*100:.2f}% confidence)</span></p>", unsafe_allow_html=True)
@@ -224,7 +226,7 @@ class StreamlitFactCheckPipeline(FactCheckPipeline):
                 try:
                     # If multiple claims, evaluate overall statement
                     if len(claims) > 1:
-                        overall_verdict, overall_confidence, overall_reasoning = self.overall_statement_evaluator(statement, claims)
+                        overall_verdict, overall_confidence, overall_reasoning = retry_function(self.overall_statement_evaluator, statement, claims)
                     else:
                         overall_verdict = claims[0].verdict
                         overall_confidence = claims[0].confidence
@@ -442,21 +444,21 @@ def main():
         if st.button("🚗 Tesla History", help=complex_examples[3]):
             st.session_state.statement_text = complex_examples[3]
     
-    # Main text input
-    statement = st.text_area(
-        "Statement to fact-check:",
-        value=st.session_state.statement_text,
-        height=120,
-        placeholder="Enter a statement to fact-check (e.g., 'The Earth is flat and was proven by NASA in 2023')",
-        key="statement_input"
-    )
-    
-    # Update session state when text area changes
-    if statement != st.session_state.statement_text:
-        st.session_state.statement_text = statement
-    
-    # Submit button
-    submitted = st.button("🚀 Start Fact-Check", type="primary", use_container_width=True)
+    with st.form("fact_check_form"):
+        statement = st.text_area(
+            "Statement to fact-check:",
+            value=st.session_state.statement_text,
+            height=120,
+            placeholder="Enter a statement to fact-check (e.g., 'The Earth is flat and was proven by NASA in 2023')",
+            key="statement_input"
+        )
+        
+        # Update session state when text area changes
+        if statement != st.session_state.statement_text:
+            st.session_state.statement_text = statement
+        
+        # Submit button
+        submitted = st.form_submit_button("🚀 Start Fact-Check", type="primary", use_container_width=True)
     
     # Validation and execution
     if submitted or statement:

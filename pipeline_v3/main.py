@@ -345,7 +345,7 @@ class VectorStore:
         self.metadata = []
 
 class ClaimExtractorSignature(dspy.Signature):
-    """Extract specific claims from the given statement.
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Extract specific claims from the given statement.
     1. Split the statement into multiple claims, but if the statement is atomic already (has one claim), return a list with just that claim.
     2. If context is included (e.g., time, location, source/speaker who made the statement, etc.), include the context in each claim to help verify it. Do not make up a context if it is not present in the text.
     3. Consider the source (e.g. name of the speaker, organization, etc.) and date of the statement if given in the context, and include them in each claim. 
@@ -384,7 +384,7 @@ class ClaimExtractor(dspy.Module):
         return claims
 
 class QuestionGeneratorSignature(dspy.Signature):
-    """Break down the given claim derived from the original statement to generate independent questions and search queries to answer it. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made, who it was made by, or when it was made. Be as specific and concise as possible, try to minimize the number of questions and search queries while still being comprehensive to verify the claim."""
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Break down the given claim derived from the original statement to generate independent questions and search queries to answer it. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made, who it was made by, or when it was made. Be as specific and concise as possible. Minimize the number of questions and search queries generated while still being comprehensive to verify the claim."""
     statement = dspy.InputField(desc="Original statement")
     claim = dspy.InputField(desc="Claim derived from the original statement to decompose into components (questions + search queries)")
     questions = dspy.OutputField(desc="""JSON objects of specific, targeted questions and search queries to answer those questions AND verify the claim with the following schema: [{
@@ -414,7 +414,7 @@ class QuestionGenerator(dspy.Module):
         return [ClaimComponent(**component) for component in data['questions']]
 
 class QueryRefinerSignature(dspy.Signature):
-    """Given the question and feeback provided, refine the given search queries to be more specific and concise to adequately answer the question."""
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Given the question and feeback provided, refine the given search queries to be more specific and concise to adequately answer the question."""
     question = dspy.InputField(desc="Question to answer")
     original_search_queries = dspy.InputField(desc="Original search queries which did not yield enough relevant information to answer the question")
     feedback = dspy.InputField(desc="Feedback on the search queries considering the question and the retrieved documents, containing information on what is missing and what is redundant")
@@ -444,7 +444,7 @@ class QueryRefiner(dspy.Module):
         return queries
     
 class QuestionRefinerSignature(dspy.Signature):
-    """Given the feeback provided, a claim, and the original statement the claim was derived from, refine the given questions and search queries to be more specific and concise to verify the claim with respect to the original statement."""
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Given the feeback provided, a claim, and the original statement the claim was derived from, refine the given questions and search queries to be more specific and concise to verify the claim with respect to the original statement."""
     statement = dspy.InputField(desc="Original statement")
     claim = dspy.InputField(desc="Claim derived from the original statement to decompose into components (questions + search queries)")
     original_questions_and_queries = dspy.InputField(desc="Original questions and search queries derived from the claim")
@@ -484,7 +484,7 @@ class QuestionRefiner(dspy.Module):
 
 ## ANSWER SYNTHESIZER ##
 class AnswerSynthesizerSignature(dspy.Signature):
-    """Synthesize an answer based on retrieved documents with inline citations."""
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Synthesize an answer based on retrieved documents with inline citations."""
     question: str = dspy.InputField(desc="Question to answer")
     search_queries = dspy.InputField(desc="Search queries used to find relevant information")
     documents = dspy.InputField(desc="Retrieved documents relevant to the question")
@@ -544,7 +544,7 @@ VERDICTS = Literal[
 ]
 
 class ClaimEvaluatorSignature(dspy.Signature):
-    """Evaluate a claim's truthfulness based on questions and answers."""
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Evaluate a claim's truthfulness based on questions and answers."""
     claim = dspy.InputField(desc="Claim to evaluate")
     qa_pairs = dspy.InputField(desc="Question-answer pairs with citations")
     verdict: VERDICTS = dspy.OutputField(desc="Verdict for the claim")
@@ -581,7 +581,7 @@ class ClaimEvaluator(dspy.Module):
 
 ## OVERALL STATEMENT EVALUATOR (SET OF CLAIMS) ##
 class OverallStatementEvaluatorSignature(dspy.Signature):
-    """Calculate ONE overall truthfulness verdict for the argument made in the overall statement, based on the verdicts of each atomic claim and evidence provided. 
+    f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Calculate ONE overall truthfulness verdict for the argument made in the overall statement, based on the verdicts of each atomic claim and evidence provided. 
     Remember that you are evaluating the truthfulness of the argument posed in the overall statement, not whether the statement was made, who it was made by, or when it was made."""
     statement = dspy.InputField(desc="Overall statement to evaluate")
     claims = dspy.InputField(desc="List of evaluated atomic claims derived from the statement, and associated question-answer pairs")
@@ -804,7 +804,7 @@ class FactCheckPipeline:
                         # answer = retry_function(self.answer_synthesizer, component, documents=relevant_docs)
 
                         # Try to synthesize answer
-                        answer, has_sufficient_info = self.answer_synthesizer(component, documents=relevant_docs)
+                        answer, has_sufficient_info = retry_function(self.answer_synthesizer, component, documents=relevant_docs)
                         
                         if VERBOSE:
                             print_header(f"Answer: {colored(answer.text, 'green')}", level=4)
