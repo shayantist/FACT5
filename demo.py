@@ -437,7 +437,7 @@ def main():
             st.session_state.statement_text = complex_examples[1]
     with complex_col3:
         if st.button("🏛️ Great Wall Facts", help=complex_examples[2]):
-            st.session_state.statement_text = complex_examples[1]
+            st.session_state.statement_text = complex_examples[2]
     with complex_col4:
         if st.button("🚗 Tesla History", help=complex_examples[3]):
             st.session_state.statement_text = complex_examples[3]
