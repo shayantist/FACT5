@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 from tavily import TavilyClient
 
-from utils import chunk_text, print_header, retry_function
+from .utils import chunk_text, print_header, retry_function
 
 @dataclass
 class Document:
