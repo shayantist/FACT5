@@ -387,9 +387,9 @@ class QuestionGeneratorSignature(dspy.Signature):
     f"""Today is {datetime.now().strftime("%Y-%m-%d")}. Break down the given claim derived from the original statement to generate independent questions and search queries to answer it. Remember that you are evaluating the truthfulness of the statement itself, not whether the statement was made, who it was made by, or when it was made. Be as specific and concise as possible. Minimize the number of questions and search queries generated while still being comprehensive to verify the claim."""
     statement = dspy.InputField(desc="Original statement")
     claim = dspy.InputField(desc="Claim derived from the original statement to decompose into components (questions + search queries)")
-    questions = dspy.OutputField(desc="""JSON objects of specific, targeted questions and search queries to answer those questions AND verify the claim with the following schema: [{
+    questions = dspy.OutputField(desc="""JSON objects of specific, targeted and unique questions and search queries to answer those questions AND verify the claim with the following schema: [{
         "question": string, # text (e.g. "What was the GDP growth rate during the Trump administration?")
-        "search_queries": [string], # independent search queries sufficient to gather evidence to answer the question, be as specific as possible, no placeholders in square brackets, no limiting to specific sites, more than 3 queries unless necessary
+        "search_queries": [string], # independent search queries sufficient to gather evidence to answer the question, be as specific as possible, no placeholders in square brackets, no limiting to specific sites, ensure each query is unique and covers different aspects of the question, no more than 3 queries unless necessary
     }]""")
     # "component_type": string # type of question (e.g. "metric", "time_period", "comparison", "causal_relation")
 
